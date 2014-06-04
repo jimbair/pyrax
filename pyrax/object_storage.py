@@ -323,9 +323,8 @@ class Container(BaseResource):
         delimiter param is there for backwards compatibility only, as the call
         requires the delimiter to be '/'.
         """
-        mthd = self.list_all if full_listing else self.list
-        objs = mthd(marker=marker, limit=limit, prefix=prefix, delimiter="/")
-        return [obj for obj in objs if "/" in obj.name]
+        return self.manager.list_subdirs(marker=marker, limit=limit,
+                prefix=prefix, delimiter=delimiter, full_listing=full_listing)
 
 
 
@@ -1082,17 +1081,27 @@ class ContainerManager(BaseManager):
         return StorageObjectIterator(container.object_manager, prefix=prefix)
 
 
-    @assure_container
     def list_subdirs(self, container, marker=None, limit=None, prefix=None,
             delimiter=None, full_listing=False):
         """
-        Although you cannot nest directories, you can simulate a hierarchical
-        structure within a single container by adding forward slash characters
-        (/) in the object name. This method returns a list of all of these
-        pseudo-subdirectories in the specified container.
+        Returns a list of StorageObjects representing the pseudo-subdirectories
+        in the specified container. You can use the marker and limit params to
+        handle pagination, and the prefix param to filter the objects returned.
+        The 'delimiter' parameter is ignored, as the only meaningful value is
+        '/'.
         """
-        return container.list_subdirs(marker=marker, limit=limit,
-                prefix=prefix, delimiter=delimiter, full_listing=full_listing)
+        cname = utils.get_name(container)
+        objs = self.list_objects(container, marker=marker, limit=limit,
+                prefix=prefix, delimiter="/", full_listing=full_listing)
+        print(objs)
+
+
+#        hdrs, objs = self.connection.get_container(cname, marker=marker,
+#                limit=limit, prefix=prefix, delimiter="/",
+#                full_listing=full_listing)
+#        cont = self.get_container(cname)
+#        return [StorageObject(self, container=cont, attdict=obj) for obj in objs
+#                if "subdir" in obj]
 
 
     @assure_container
