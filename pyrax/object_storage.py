@@ -369,17 +369,7 @@ class StorageObjectManager(BaseManager):
         resp, resp_body = self.api.method_get(uri)
         if return_raw:
             return resp_body
-        subdirs = [elem for elem in resp_body if "subdir" in elem]
-        objs_body = [obj for obj in resp_body if obj not in subdirs]
-        objs = [StorageObject(self, obj) for obj in objs_body]
-        for subdir in subdirs:
-            sub_uri = "%s&prefix=%s" % (uri, subdir["subdir"])
-            resp, resp_body = self.api.method_get(sub_uri)
-            subobjs = [StorageObject(self, obj) for obj in resp_body]
-            for subobj in subobjs:
-                if hasattr(subobj, "subdir"):
-                    setattr(subobj, "name", subobj.subdir)
-            objs.extend(subobjs)
+        objs = [StorageObject(self, elem) for elem in resp_body]
         return objs
 
 
@@ -1081,6 +1071,7 @@ class ContainerManager(BaseManager):
         return StorageObjectIterator(container.object_manager, prefix=prefix)
 
 
+    @assure_container
     def list_subdirs(self, container, marker=None, limit=None, prefix=None,
             delimiter=None, full_listing=False):
         """
@@ -1090,18 +1081,14 @@ class ContainerManager(BaseManager):
         The 'delimiter' parameter is ignored, as the only meaningful value is
         '/'.
         """
-        cname = utils.get_name(container)
-        objs = self.list_objects(container, marker=marker, limit=limit,
-                prefix=prefix, delimiter="/", full_listing=full_listing)
-        print(objs)
-
-
-#        hdrs, objs = self.connection.get_container(cname, marker=marker,
-#                limit=limit, prefix=prefix, delimiter="/",
-#                full_listing=full_listing)
-#        cont = self.get_container(cname)
-#        return [StorageObject(self, container=cont, attdict=obj) for obj in objs
-#                if "subdir" in obj]
+        mthd = container.list_all if full_listing else container.list
+        objs = mthd(marker=marker, limit=limit, prefix=prefix, delimiter="/",
+                return_raw=True)
+        sdirs = [obj for obj in objs if "subdir" in obj]
+        for sdir in sdirs:
+            sdir["name"] = sdir["subdir"]
+        mgr = container.object_manager
+        return [StorageObject(mgr, sdir) for sdir in sdirs]
 
 
     @assure_container
