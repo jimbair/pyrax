@@ -176,8 +176,6 @@ class Container(BaseResource):
             objects = self.list(marker=marker, limit=limit, prefix=prefix,
                     delimiter=delimiter, end_marker=end_marker)
         return [obj.name for obj in objects]
-    # Alias for backwards compatibility
-    get_object_names = list_object_names
 
 
     def find(self, **kwargs):
@@ -1093,7 +1091,7 @@ class ContainerManager(BaseManager):
         (/) in the object name. This method returns a list of all of these
         pseudo-subdirectories in the specified container.
         """
-        return container.list_subdirs(container, marker=marker, limit=limit,
+        return container.list_subdirs(marker=marker, limit=limit,
                 prefix=prefix, delimiter=delimiter, full_listing=full_listing)
 
 
