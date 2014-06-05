@@ -238,6 +238,54 @@ class Container(BaseResource):
                 metadata=metadata)
 
 
+    def store_object(self, obj_name, data, content_type=None, etag=None,
+            content_encoding=None, ttl=None, return_none=False,
+            extra_info=None):
+        """
+        Creates a new object in this container, and populates it with the given
+        data. A StorageObject reference to the uploaded file will be returned,
+        unless 'return_none' is set to True.
+
+        The 'extra_info' parameter is included for backwards compatibility. It
+        is no longer used at all, and will not be modified with swiftclient
+        info, since swiftclient is not used any more.
+        """
+        return self.create(obj_name=obj_name, data=data,
+                content_type=content_type, etag=etag,
+                content_encoding=content_encoding, ttl=ttl,
+                return_none=return_none)
+
+
+    def upload_file(self, file_or_path, obj_name=None, content_type=None,
+            etag=None, return_none=False, content_encoding=None, ttl=None,
+            content_length=None):
+        """
+        Uploads the specified file to this container. If no name is supplied,
+        the file's name will be used. Either a file path or an open file-like
+        object may be supplied. A StorageObject reference to the uploaded file
+        will be returned, unless 'return_none' is set to True.
+
+        You may optionally set the `content_type` and `content_encoding`
+        parameters; pyrax will create the appropriate headers when the object
+        is stored.
+
+        If the size of the file is known, it can be passed as `content_length`.
+
+        If you wish for the object to be temporary, specify the time it should
+        be stored in seconds in the `ttl` parameter. If this is specified, the
+        object will be deleted after that number of seconds.
+
+        The 'extra_info' parameter is included for backwards compatibility. It
+        is no longer used at all, and will not be modified with swiftclient
+        info, since swiftclient is not used any more.
+        """
+        return self.create(file_or_path=file_or_path, obj_name=obj_name,
+                content_type=content_type, etag=etag,
+                content_encoding=content_encoding,
+                content_length=content_length, ttl=ttl,
+                return_none=return_none)
+
+
     def fetch(self, obj, include_meta=False, chunk_size=None, size=None,
             extra_info=None):
         """
@@ -287,6 +335,15 @@ class Container(BaseResource):
         return self.object_manager.download(obj, directory, structure=structure)
 
 
+    def delete(self, del_objects=False):
+        """
+        Deletes this Container. If the container contains objects, the
+        command will fail unless 'del_objects' is passed as True. In that
+        case, each object will be deleted first, and then the container.
+        """
+        return self.manager.delete(self, del_objects=del_objects)
+
+
     def delete_object(self, obj):
         """
         Deletes the object from this container.
@@ -295,6 +352,28 @@ class Container(BaseResource):
         StorageObject representing the object to be deleted.
         """
         return self.object_manager.delete(obj)
+
+
+    def delete_all_objects(self, async=False):
+        """
+        Deletes all objects from this container.
+
+        By default the call will block until all objects have been deleted. By
+        passing True for the 'async' parameter, this method will not block, and
+        instead return an object that can be used to follow the progress of the
+        deletion. When deletion is complete the bulk deletion object's
+        'results' attribute will be populated with the information returned
+        from the API call. In synchronous mode this is the value that is
+        returned when the call completes. It is a dictionary with the following
+        keys:
+
+            deleted - the number of objects deleted
+            not_found - the number of objects not found
+            status - the HTTP return status code. '200 OK' indicates success
+            errors - a list of any errors returned by the bulk delete call
+        """
+        nms = self.list_object_names(full_listing=True)
+        return self.object_manager.delete_all_objects(nms, async=async)
 
 
     def copy_object(self, obj, new_container, new_obj_name=None,
@@ -325,6 +404,13 @@ class Container(BaseResource):
         """
         return self.manager.list_subdirs(marker=marker, limit=limit,
                 prefix=prefix, delimiter=delimiter, full_listing=full_listing)
+
+
+    def remove_from_cache(self, obj):
+        """
+        Not used anymore. Included for backwards compatibility.
+        """
+        pass
 
 
 
@@ -600,6 +686,29 @@ class StorageObjectManager(BaseManager):
         return self.fetch(obj, size=size)
 
 
+    def delete_all_objects(self, nms, async=False):
+        """
+        Deletes all objects from this container.
+
+        By default the call will block until all objects have been deleted. By
+        passing True for the 'async' parameter, this method will not block, and
+        instead return an object that can be used to follow the progress of the
+        deletion. When deletion is complete the bulk deletion object's
+        'results' attribute will be populated with the information returned
+        from the API call. In synchronous mode this is the value that is
+        returned when the call completes. It is a dictionary with the following
+        keys:
+
+            deleted - the number of objects deleted
+            not_found - the number of objects not found
+            status - the HTTP return status code. '200 OK' indicates success
+            errors - a list of any errors returned by the bulk delete call
+        """
+        if nms is None:
+            objs = self.api.list_object_names(self.name)
+        return self.api.bulk_delete(self.name, nms, async=async)
+
+
     def download(self, obj, directory, structure=True):
         """
         Fetches the object from storage, and writes it to the specified
@@ -704,10 +813,17 @@ class ContainerManager(BaseManager):
             raise exc.ClientException("oops")
 
 
-    def delete(self, item):
-        """Deletes the specified item."""
-        uri = "/%s" % utils.get_id(item)
-        return self._delete(uri)
+    def delete(self, container, del_objects=False):
+        """
+        Deletes the specified container. If the container contains objects, the
+        command will fail unless 'del_objects' is passed as True. In that case,
+        each object will be deleted first, and then the container.
+        """
+        if del_objects:
+            nms = self.list_object_names(container)
+            self.api.bulk_delete(container, nms, async=False)
+        uri = "/%s" % utils.get_name(container)
+        resp, resp_body = self.api.method_delete(uri)
 
 
     def _create_body(self, name, *args, **kwargs):
@@ -1325,7 +1441,7 @@ class StorageClient(BaseClient):
 
     def remove_container_from_cache(self, container):
         """
-        Not used anymore. Included for backwards-compatibility.
+        Not used anymore. Included for backwards compatibility.
         """
         pass
 
@@ -1463,38 +1579,6 @@ class StorageClient(BaseClient):
                 method=method, key=key)
 
 
-    def delete_object_in_seconds(self, cont, obj, seconds, extra_info=None):
-        """
-        Sets the object in the specified container to be deleted after the
-        specified number of seconds.
-
-        The 'extra_info' parameter is included for backwards compatibility. It
-        is no longer used at all, and will not be modified with swiftclient
-        info, since swiftclient is not used any more.
-        """
-        meta = {"X-Delete-After": str(seconds)}
-        self.set_object_metadata(cont, obj, meta, prefix="")
-
-
-    def list_container_names(self):
-        """
-        Returns a list of the names of the containers in this account.
-        """
-        return [cont.name for cont in self.list()]
-
-
-    def list_containers_info(self, limit=None, marker=None):
-        """Returns a list of info on Containers.
-
-        For each container, a dict containing the following keys is returned:
-        \code
-            name - the name of the container
-            count - the number of objects in the container
-            bytes - the total bytes in the container
-        """
-        return self._manager.list_containers_info(limit=limit, marker=marker)
-
-
     def list_public_containers(self):
         """
         Returns a list of the names of all CDN-enabled containers.
@@ -1581,6 +1665,38 @@ class StorageClient(BaseClient):
         """
         return self._manager.purge_cdn_object(container, obj,
                 email_addresses=email_addresses)
+
+
+    def list_container_names(self):
+        """
+        Returns a list of the names of the containers in this account.
+        """
+        return [cont.name for cont in self.list()]
+
+
+    def list_containers_info(self, limit=None, marker=None):
+        """Returns a list of info on Containers.
+
+        For each container, a dict containing the following keys is returned:
+        \code
+            name - the name of the container
+            count - the number of objects in the container
+            bytes - the total bytes in the container
+        """
+        return self._manager.list_containers_info(limit=limit, marker=marker)
+
+
+    def list_container_subdirs(self, container, marker=None, limit=None,
+            prefix=None, delimiter=None, full_listing=False):
+        """
+        Although you cannot nest directories, you can simulate a hierarchical
+        structure within a single container by adding forward slash characters
+        (/) in the object name. This method returns a list of all of these
+        pseudo-subdirectories in the specified container.
+        """
+        return self._manager.list_subdirs(container, marker=marker,
+                limit=limit, prefix=prefix, delimiter=delimiter,
+                full_listing=full_listing)
 
 
     def list_container_object_names(self, container, marker=None, limit=None,
@@ -1757,17 +1873,17 @@ class StorageClient(BaseClient):
         return self._manager.object_listing_iterator(container, prefix=prefix)
 
 
-    def list_container_subdirs(self, container, marker=None, limit=None,
-            prefix=None, delimiter=None, full_listing=False):
+    def delete_object_in_seconds(self, cont, obj, seconds, extra_info=None):
         """
-        Although you cannot nest directories, you can simulate a hierarchical
-        structure within a single container by adding forward slash characters
-        (/) in the object name. This method returns a list of all of these
-        pseudo-subdirectories in the specified container.
+        Sets the object in the specified container to be deleted after the
+        specified number of seconds.
+
+        The 'extra_info' parameter is included for backwards compatibility. It
+        is no longer used at all, and will not be modified with swiftclient
+        info, since swiftclient is not used any more.
         """
-        return self._manager.list_subdirs(container, marker=marker,
-                limit=limit, prefix=prefix, delimiter=delimiter,
-                full_listing=full_listing)
+        meta = {"X-Delete-After": str(seconds)}
+        self.set_object_metadata(cont, obj, meta, prefix="")
 
 
     def get_object(self, container, obj):
@@ -1815,6 +1931,10 @@ class StorageClient(BaseClient):
         If you wish for the object to be temporary, specify the time it should
         be stored in seconds in the `ttl` parameter. If this is specified, the
         object will be deleted after that number of seconds.
+
+        The 'extra_info' parameter is included for backwards compatibility. It
+        is no longer used at all, and will not be modified with swiftclient
+        info, since swiftclient is not used any more.
         """
         return self.create_object(container, file_or_path=file_or_path,
                 obj_name=obj_name, content_type=content_type, etag=etag,
@@ -1956,6 +2076,15 @@ class StorageClient(BaseClient):
         """
         return self._manager.download_object(container, obj, directory,
                 structure=structure)
+
+
+    def delete(self, container, del_objects=False):
+        """
+        Deletes the specified container. If the container contains objects, the
+        command will fail unless 'del_objects' is passed as True. In that case,
+        each object will be deleted first, and then the container.
+        """
+        return self._manager.delete(container, del_objects=del_objects)
 
 
     def delete_object(self, container, obj):
@@ -2399,13 +2528,15 @@ class BulkDeleter(threading.Thread):
         container = self.container
         object_names = self.object_names
         cname = utils.get_name(container)
-        headers = {"X-Auth-Token": pyrax.identity.token,
-                "Content-type": "text/plain",
+        ident = self.client.identity
+        headers = {"X-Auth-Token": ident.token,
+                "Content-Type": "text/plain",
                 }
         obj_paths = ("%s/%s" % (cname, nm) for nm in object_names)
         body = "\n".join(obj_paths)
         uri = "/?bulk-delete=1"
-        resp, resp_body = self.client.method_delete(uri, data=body)
+        resp, resp_body = self.client.method_delete(uri, data=body,
+                headers=headers)
         status = resp_body.get("Response Status", "").split(" ")[0]
         self.results = resp_body
         self.completed = True
