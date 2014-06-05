@@ -130,6 +130,43 @@ class Container(BaseResource):
         return self.name
 
 
+    def get_metadata(self, prefix=None):
+        """
+        Returns a dictionary containing the metadata for this container.
+        """
+        return self.manager.get_metadata(self, prefix=prefix)
+
+
+    def set_metadata(self, metadata, clear=False, prefix=None):
+        """
+        Accepts a dictionary of metadata key/value pairs and updates the
+        specified container metadata with them.
+
+        If 'clear' is True, any existing metadata is deleted and only the
+        passed metadata is retained. Otherwise, the values passed here update
+        the container's metadata.
+
+        'extra_info' is an optional dictionary which will be populated with
+        'status', 'reason', and 'headers' keys from the underlying swiftclient
+        call.
+
+        By default, the standard container metadata prefix
+        ('X-Container-Meta-') is prepended to the header name if it isn't
+        present. For non-standard headers, you must include a non-None prefix,
+        such as an empty string.
+        """
+        return self.manager.set_metadata(self, metadata, clear=clear,
+                prefix=prefix)
+
+
+    def remove_metadata_key(self, key, prefix=None):
+        """
+        Removes the specified key from the container's metadata. If the key
+        does not exist in the metadata, nothing is done.
+        """
+        return self.manager.remove_metadata_key(self, key, prefix=prefix)
+
+
     def get(self, item):
         """
         Returns a StorageObject matching the specified item. If no such object
@@ -314,6 +351,14 @@ class Container(BaseResource):
                 chunk_size=chunk_size, size=size)
 
 
+    def fetch_object(self, obj_name, include_meta=False, chunk_size=None):
+        """
+        Alias for self.fetch(); included for backwards compatibility
+        """
+        return self.fetch(obj=obj_name, include_meta=include_meta,
+                chunk_size=chunk_size)
+
+
     def fetch_partial(self, obj, size):
         """
         Returns the first 'size' bytes of an object. If the object is smaller
@@ -333,6 +378,14 @@ class Container(BaseResource):
         created, pass `structure=False` in the parameters.
         """
         return self.object_manager.download(obj, directory, structure=structure)
+
+
+    def download_object(self, obj_name, directory, structure=True):
+        """
+        Alias for self.download(); included for backwards compatibility
+        """
+        return self.download(obj=obj_name, directory=directory,
+                structure=structure)
 
 
     def delete(self, del_objects=False):
@@ -901,6 +954,21 @@ class ContainerManager(BaseManager):
         return 200 <= resp.status_code <= 299
 
 
+    def get_metadata(self, container, prefix=None):
+        """
+        Returns a dictionary containing the metadata for the container.
+        """
+        headers = self.get_headers(container)
+        if prefix is None:
+            prefix = CONTAINER_META_PREFIX
+        low_prefix = prefix.lower()
+        ret = {}
+        for hkey, hval in list(headers.items()):
+            if hkey.lower().startswith(low_prefix):
+                ret[hkey] = hval
+        return ret
+
+
     def set_metadata(self, container, metadata, clear=False, prefix=None):
         """
         Accepts a dictionary of metadata key/value pairs and updates the
@@ -929,6 +997,15 @@ class ContainerManager(BaseManager):
         uri = "/%s" % utils.get_name(container)
         resp, resp_body = self.api.method_post(uri, headers=new_meta)
         return 200 <= resp.status_code <= 299
+
+
+    def remove_metadata_key(self, container, key):
+        """
+        Removes the specified key from the container's metadata. If the key
+        does not exist in the metadata, nothing is done.
+        """
+        meta_dict = {key: ""}
+        return self.set_metadata(container, meta_dict)
 
 
     def delete_metadata(self, container, prefix=None):
@@ -1714,15 +1791,7 @@ class StorageClient(BaseClient):
         """
         Returns a dictionary containing the metadata for the container.
         """
-        headers = self._manager.get_headers(container)
-        if prefix is None:
-            prefix = CONTAINER_META_PREFIX
-        low_prefix = prefix.lower()
-        ret = {}
-        for hkey, hval in list(headers.items()):
-            if hkey.lower().startswith(low_prefix):
-                ret[hkey] = hval
-        return ret
+        return self._manager.get_metadata(container, prefix=prefix)
 
 
     def set_container_metadata(self, container, metadata, clear=False,
@@ -1749,8 +1818,7 @@ class StorageClient(BaseClient):
         Removes the specified key from the container's metadata. If the key
         does not exist in the metadata, nothing is done.
         """
-        meta_dict = {key: ""}
-        return self._manager.set_metadata(container, meta_dict)
+        return self._manager.set_metadata(container, key)
 
 
     def delete_container_metadata(self, container, prefix=None):
