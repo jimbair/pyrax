@@ -46,6 +46,8 @@ OBJECT_META_PREFIX = "X-Object-Meta-"
 
 # Maximum size of a stored object: 5GB - 1
 MAX_FILE_SIZE = 5368709119
+# Default size for chunked uploads, in bytes
+DEFAULT_CHUNKSIZE = 65536
 
 
 def assure_container(fnc):
@@ -238,7 +240,7 @@ class Container(BaseResource):
     def create(self, file_or_path=None, data=None, obj_name=None,
             content_type=None, etag=None, content_encoding=None,
             content_length=None, ttl=None, chunked=False, metadata=None,
-            return_none=False):
+            chunk_size=None, headers=None, return_none=False):
         """
         Creates or replaces a storage object in this container.
 
@@ -272,7 +274,8 @@ class Container(BaseResource):
                 data=data, obj_name=obj_name, content_type=content_type,
                 etag=etag, content_encoding=content_encoding,
                 content_length=content_length, ttl=ttl, chunked=chunked,
-                metadata=metadata)
+                metadata=metadata, chunk_size=chunk_size, headers=headers,
+                return_none=return_none)
 
 
     def store_object(self, obj_name, data, content_type=None, etag=None,
@@ -539,7 +542,7 @@ class StorageObjectManager(BaseManager):
     def create(self, file_or_path=None, data=None, obj_name=None,
             content_type=None, etag=None, content_encoding=None,
             content_length=None, ttl=None, chunked=False, metadata=None,
-            return_none=False):
+            chunk_size=None, headers=None, return_none=False):
         """
         Creates or replaces a storage object in this container.
 
@@ -580,7 +583,11 @@ class StorageObjectManager(BaseManager):
         if not obj_name:
             raise exc.MissingName("No name for the object to be created has "
                     "been specified, and none can be inferred from context")
-        headers = {}
+        if chunk_size:
+            chunked = True
+        if chunked:
+            chunk_size = chunk_size or DEFAULT_CHUNKSIZE
+        headers = headers or {}
         if metadata:
             metadata = _massage_metakeys(metadata, OBJECT_META_PREFIX)
             headers = metadata
@@ -588,7 +595,7 @@ class StorageObjectManager(BaseManager):
             headers["X-Delete-After"] = ttl
         if src is data:
             self._upload(obj_name, data, content_type, content_encoding,
-                    content_length, etag, chunked, headers)
+                    content_length, etag, chunked, chunk_size, headers)
         else:
             if os.path.isfile(file_or_path):
                 # Need to wrap the call in a context manager
@@ -605,7 +612,7 @@ class StorageObjectManager(BaseManager):
 
 
     def _upload(self, obj_name, content, content_type, content_encoding,
-            content_length, etag, chunked, headers):
+            content_length, etag, chunked, chunk_size, headers):
         """
         Handles the uploading of content, including working around the 5GB
         maximum file size.
@@ -626,7 +633,7 @@ class StorageObjectManager(BaseManager):
         if fsize <= MAX_FILE_SIZE:
             # We can just upload it as-is.
             return self._store_object(obj_name, content=content, etag=etag,
-                    chunked=chunked, headers=headers)
+                    chunked=chunked, chunk_size=chunk_size, headers=headers)
         # Files larger than MAX_FILE_SIZE must be segmented
         # and uploaded separately.
         num_segments = int(math.ceil(float(fsize) / MAX_FILE_SIZE))
@@ -651,7 +658,7 @@ class StorageObjectManager(BaseManager):
 
 
     def _store_object(self, obj_name, content, etag=None, chunked=False,
-            headers=None):
+            chunk_size=None, headers=None):
         """
         Handles the low-level creation of a storage object and the uploading of
         the contents of that object.
@@ -1296,7 +1303,7 @@ class ContainerManager(BaseManager):
     def create_object(self, container, file_or_path=None, data=None,
             obj_name=None, content_type=None, etag=None, content_encoding=None,
             content_length=None, ttl=None, chunked=False, metadata=None,
-            return_none=False):
+            chunk_size=None, headers=None, return_none=False):
         """
         Creates or replaces a storage object in the specified container.
         Returns a StorageObject reference will be returned, unless the
@@ -1326,7 +1333,8 @@ class ContainerManager(BaseManager):
                 obj_name=obj_name, content_type=content_type, etag=etag,
                 content_encoding=content_encoding,
                 content_length=content_length, ttl=ttl, chunked=chunked,
-                metadata=metadata, return_none=return_none)
+                metadata=metadata, chunk_size=chunk_size, headers=headers,
+                return_none=return_none)
 
 
     @assure_container
