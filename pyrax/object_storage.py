@@ -48,6 +48,16 @@ OBJECT_META_PREFIX = "X-Object-Meta-"
 MAX_FILE_SIZE = 5368709119
 # Default size for chunked uploads, in bytes
 DEFAULT_CHUNKSIZE = 65536
+# The default for CDN when TTL is not specified.
+DEFAULT_CDN_TTL = 86400
+
+
+# Used to indicate values that are lazy-loaded
+class Fault(object):
+    def __nonzero__(self):
+        return False
+
+FAULT = Fault()
 
 
 def assure_container(fnc):
@@ -108,6 +118,13 @@ def get_file_size(fileobj):
 class Container(BaseResource):
     def __init__(self, *args, **kwargs):
         super(Container, self).__init__(*args, **kwargs)
+        self._cdn_enabled = FAULT
+        self._cdn_uri = FAULT
+        self._cdn_ttl = FAULT
+        self._cdn_ssl_uri = FAULT
+        self._cdn_streaming_uri = FAULT
+        self._cdn_ios_uri = FAULT
+        self._cdn_log_retention = FAULT
         self.object_manager = StorageObjectManager(self.manager.api,
                 uri_base=self.name, resource_class=StorageObject)
         self._non_display = ["object_manager"]
@@ -134,6 +151,42 @@ class Container(BaseResource):
         used.
         """
         return self.name
+
+
+    def _set_cdn_defaults(self):
+        """Sets all the CDN-related attributes to default values."""
+        self._cdn_enabled = False
+        self._cdn_uri = None
+        self._cdn_ttl = DEFAULT_CDN_TTL
+        self._cdn_ssl_uri = None
+        self._cdn_streaming_uri = None
+        self._cdn_ios_uri = None
+        self._cdn_log_retention = False
+
+
+    def _fetch_cdn_data(self):
+        """Fetches the object's CDN data from the CDN service"""
+        if self._cdn_enabled is FAULT:
+            headers = self.manager.fetch_cdn_data(self)
+        # Set defaults in case not all headers are present.
+        self._set_cdn_defaults()
+        if not headers:
+            # Not CDN enabled; return
+            return
+        for key, value in headers.items():
+            low_key = key.lower()
+            if low_key == "x-cdn-uri":
+                self._cdn_uri = value
+            elif low_key == "x-ttl":
+                self._cdn_ttl = int(value)
+            elif low_key == "x-cdn-ssl-uri":
+                self._cdn_ssl_uri = value
+            elif low_key == "x-cdn-streaming-uri":
+                self._cdn_streaming_uri = value
+            elif low_key == "x-cdn-ios-uri":
+                self._cdn_ios_uri = value
+            elif low_key == "x-log-retention":
+                self._cdn_log_retention = (value == "True")
 
 
     def get_metadata(self, prefix=None):
@@ -579,6 +632,81 @@ class Container(BaseResource):
         pass
 
 
+    # BEGIN - CDN property definitions ##
+    def _get_cdn_log_retention(self):
+        if self._cdn_log_retention is FAULT:
+            self._fetch_cdn_data()
+        return self._cdn_log_retention
+
+    def _set_cdn_log_retention(self, val):
+        self.client._set_cdn_log_retention(self, val)
+        self._cdn_log_retention = val
+
+
+    def _get_cdn_enabled(self):
+        if self._cdn_enabled is FAULT:
+            self._fetch_cdn_data()
+        return self._cdn_enabled
+
+    def _set_cdn_enabled(self, val):
+        self._cdn_enabled = val
+
+
+    def _get_cdn_uri(self):
+        if self._cdn_uri is FAULT:
+            self._fetch_cdn_data()
+        return self._cdn_uri
+
+    def _set_cdn_uri(self, val):
+        self._cdn_uri = val
+
+
+    def _get_cdn_ttl(self):
+        if self._cdn_ttl is FAULT:
+            self._fetch_cdn_data()
+        return self._cdn_ttl
+
+    def _set_cdn_ttl(self, val):
+        self._cdn_ttl = val
+
+
+    def _get_cdn_ssl_uri(self):
+        if self._cdn_ssl_uri is FAULT:
+            self._fetch_cdn_data()
+        return self._cdn_ssl_uri
+
+    def _set_cdn_ssl_uri(self, val):
+        self._cdn_ssl_uri = val
+
+
+    def _get_cdn_streaming_uri(self):
+        if self._cdn_streaming_uri is FAULT:
+            self._fetch_cdn_data()
+        return self._cdn_streaming_uri
+
+    def _set_cdn_streaming_uri(self, val):
+        self._cdn_streaming_uri = val
+
+
+    def _get_cdn_ios_uri(self):
+        if self._cdn_ios_uri is FAULT:
+            self._fetch_cdn_data()
+        return self._cdn_ios_uri
+
+    def _set_cdn_ios_uri(self, val):
+        self._cdn_ios_uri = val
+
+
+    cdn_enabled = property(_get_cdn_enabled, _set_cdn_enabled)
+    cdn_log_retention = property(_get_cdn_log_retention, _set_cdn_log_retention)
+    cdn_uri = property(_get_cdn_uri, _set_cdn_uri)
+    cdn_ttl = property(_get_cdn_ttl, _set_cdn_ttl)
+    cdn_ssl_uri = property(_get_cdn_ssl_uri, _set_cdn_ssl_uri)
+    cdn_streaming_uri = property(_get_cdn_streaming_uri, _set_cdn_streaming_uri)
+    cdn_ios_uri = property(_get_cdn_ios_uri, _set_cdn_ios_uri)
+    # END - CDN property definitions ##
+
+
 
 class ContainerManager(BaseManager):
     def _list(self, uri, obj_class=None, body=None, return_raw=False):
@@ -647,6 +775,20 @@ class ContainerManager(BaseManager):
         Container creation requires no body.
         """
         return None
+
+
+    def fetch_cdn_data(self, container):
+        """
+        Returns a dict containing the CDN information for the specified
+        container. If the container is not CDN-enabled, returns an empty dict.
+        """
+        uri = "/%s" % utils.get_name(container)
+        try:
+            resp, resp_body = self.api.cdn_request(uri, "HEAD")
+        except exc.NotCDNEnabled:
+            return {}
+        return resp.headers
+
 
 
     def get_account_headers(self):
