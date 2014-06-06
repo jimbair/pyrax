@@ -123,6 +123,10 @@ class Container(BaseResource):
                 "get_object_names"])
 
 
+    def __repr__(self):
+        return "<Container '%s'>" % self.name
+
+
     @property
     def id(self):
         """
@@ -148,9 +152,9 @@ class Container(BaseResource):
         passed metadata is retained. Otherwise, the values passed here update
         the container's metadata.
 
-        'extra_info' is an optional dictionary which will be populated with
-        'status', 'reason', and 'headers' keys from the underlying swiftclient
-        call.
+        The 'extra_info' parameter is included for backwards compatibility. It
+        is no longer used at all, and will not be modified with swiftclient
+        info, since swiftclient is not used any more.
 
         By default, the standard container metadata prefix
         ('X-Container-Meta-') is prepended to the header name if it isn't
@@ -167,6 +171,41 @@ class Container(BaseResource):
         does not exist in the metadata, nothing is done.
         """
         return self.manager.remove_metadata_key(self, key, prefix=prefix)
+
+
+    def set_web_index_page(self, page):
+        """
+        Sets the header indicating the index page in this container when
+        creating a static website.
+
+        Note: the container must be CDN-enabled for this to have any effect.
+        """
+        return self.manager.set_web_index_page(self)
+
+
+    def set_web_error_page(self, page):
+        """
+        Sets the header indicating the error page in this container when
+        creating a static website.
+
+        Note: the container must be CDN-enabled for this to have any effect.
+        """
+        return self.manager.set_web_error_page(self, page)
+
+
+    def make_public(self, ttl=None):
+        """
+        Enables CDN access for this container, and optionally sets the TTL.
+        """
+        return self.manager.make_public(self, ttl=ttl)
+
+
+    def make_private(self):
+        """
+        Disables CDN access to this container. It may still appear public until
+        the TTL expires.
+        """
+        return self.manager.make_private(self)
 
 
     def get(self, item):
@@ -438,8 +477,57 @@ class Container(BaseResource):
         Copies the object to the new container, optionally giving it a new name.
         If you copy to the same container, you must supply a different name.
         """
-        return container.copy_object(obj, new_container,
+        return self.manager.copy_object(self, obj, new_container,
                 new_obj_name=new_obj_name, content_type=content_type)
+
+
+    def move_object(self, container, obj, new_container, new_obj_name=None,
+            new_reference=False, content_type=None, extra_info=None):
+        """
+        Works just like copy_object, except that the source object is deleted
+        after a successful copy.
+
+        You can optionally change the content_type of the object by supplying
+        that in the 'content_type' parameter.
+
+        NOTE: any references to the original object will no longer be valid;
+        you will have to get a reference to the new object by passing True for
+        the 'new_reference' parameter. When this is True, a reference to the
+        newly moved object is returned. Otherwise, the etag for the moved
+        object is returned.
+
+        The 'extra_info' parameter is included for backwards compatibility. It
+        is no longer used at all, and will not be modified with swiftclient
+        info, since swiftclient is not used any more.
+        """
+        return self.manager.move_object(self, obj, new_container,
+                new_obj_name=new_obj_name, new_reference=new_reference,
+                content_type=content_type)
+
+
+    def change_object_content_type(self, obj, new_ctype, guess=False):
+        """
+        Copies object to itself, but applies a new content-type. The guess
+        feature requires this container to be CDN-enabled. If not, then the
+        content-type must be supplied. If using guess with a CDN-enabled
+        container, new_ctype can be set to None. Failure during the put will
+        result in an exception.
+        """
+        return self.manager.change_object_content_type(self, obj, new_ctype,
+                guess=guess)
+
+
+    def get_temp_url(self, obj, seconds, method="GET", key=None):
+        """
+        Given a storage object in this container, returns a URL that can be
+        used to access that object. The URL will expire after `seconds`
+        seconds.
+
+        The only methods supported are GET and PUT. Anything else will raise an
+        `InvalidTemporaryURLMethod` exception.
+        """
+        return self.manager.get_temp_url(self, obj, seconds, method=method,
+                key=key)
 
 
     def get_object_metadata(self, obj):
@@ -447,6 +535,28 @@ class Container(BaseResource):
         Returns the metadata for the specified object as a dict.
         """
         return self.object_manager.get_metadata(obj)
+
+
+    def set_object_metadata(self, obj, metadata, clear=False, extra_info=None,
+            prefix=None):
+        """
+        Accepts a dictionary of metadata key/value pairs and updates the
+        specified object metadata with them.
+
+        If 'clear' is True, any existing metadata is deleted and only the
+        passed metadata is retained. Otherwise, the values passed here update
+        the object's metadata.
+
+        The 'extra_info' parameter is included for backwards compatibility. It
+        is no longer used at all, and will not be modified with swiftclient
+        info, since swiftclient is not used any more.
+
+        By default, the standard object metadata prefix ('X-Object-Meta-') is
+        prepended to the header name if it isn't present. For non-standard
+        headers, you must include a non-None prefix, such as an empty string.
+        """
+        return self.object_manager.set_metadata(obj, metadata, clear=clear,
+                prefix=prefix)
 
 
     def list_subdirs(self, marker=None, limit=None, prefix=None, delimiter=None,
@@ -470,6 +580,682 @@ class Container(BaseResource):
 
 
 
+class ContainerManager(BaseManager):
+    def _list(self, uri, obj_class=None, body=None, return_raw=False):
+        """
+        Swift doesn't return listings in the same format as the rest of
+        OpenStack, so this method has to be overriden.
+        """
+        resp, resp_body = self.api.method_get(uri)
+        return [Container(self, res, loaded=False)
+                for res in resp_body if res]
+
+
+    def get(self, item):
+        """
+        Returns a Container matching the specified item. If no such container
+        exists, a NotFound exception is raised.
+        """
+        name = utils.get_name(item)
+        uri = "/%s" % name
+        try:
+            resp, resp_body = self.api.method_head(uri)
+        except exc.NotFound as e:
+            e.message = "No container named '%s' exists." % name
+            raise e
+        hdrs = resp.headers
+        data = {"bytes": hdrs.get("x-container-bytes-used"),
+                "count": hdrs.get("x-container-object-count"),
+                "name": name}
+        return Container(self, data, loaded=False)
+
+
+    def create(self, name, metadata=None, prefix=None, *args, **kwargs):
+        """
+        Creates a new container, and returns a Container object that represents
+        that contianer. If a container by the same name already exists, no
+        exception is raised; instead, a reference to that existing container is
+        returned.
+        """
+        uri = "/%s" % name
+        headers = {}
+        if metadata:
+            metadata = _massage_metakeys(metadata, CONTAINER_META_PREFIX)
+            headers = metadata
+        resp, resp_body = self.api.method_put(uri, headers=headers)
+        if resp.status_code in (201, 202):
+            return Container(self, {"name": name})
+        elif resp.status_code == 400:
+            raise exc.ClientException("oops")
+
+
+    def delete(self, container, del_objects=False):
+        """
+        Deletes the specified container. If the container contains objects, the
+        command will fail unless 'del_objects' is passed as True. In that case,
+        each object will be deleted first, and then the container.
+        """
+        if del_objects:
+            nms = self.list_object_names(container)
+            self.api.bulk_delete(container, nms, async=False)
+        uri = "/%s" % utils.get_name(container)
+        resp, resp_body = self.api.method_delete(uri)
+
+
+    def _create_body(self, name, *args, **kwargs):
+        """
+        Container creation requires no body.
+        """
+        return None
+
+
+    def get_account_headers(self):
+        """
+        Return the headers for the account. This includes all the headers, not
+        just the account-specific headers. The calling program is responsible
+        for only using the ones that it needs.
+        """
+        resp, resp_body = self.api.method_head("/")
+        return resp.headers
+
+
+    def get_headers(self, container):
+        """
+        Return the headers for the specified container.
+        """
+        uri = "/%s" % utils.get_name(container)
+        resp, resp_body = self.api.method_head(uri)
+        return resp.headers
+
+
+    def set_account_metadata(self, metadata, clear=False, prefix=None):
+        """
+        Accepts a dictionary of metadata key/value pairs and updates the
+        account metadata with them.
+
+        If 'clear' is True, any existing metadata is deleted and only the
+        passed metadata is retained. Otherwise, the values passed here update
+        the account's metadata.
+
+        By default, the standard account metadata prefix ('X-Account-Meta-') is
+        prepended to the header name if it isn't present. For non-standard
+        headers, you must include a non-None prefix, such as an empty string.
+        """
+        # Add the metadata prefix, if needed.
+        if prefix is None:
+            prefix = ACCOUNT_META_PREFIX
+        massaged = _massage_metakeys(metadata, prefix)
+        new_meta = {}
+        if clear:
+            curr_meta = self.api.get_account_metadata(prefix=prefix)
+            for ckey in curr_meta:
+                new_meta[ckey] = ""
+            new_meta = _massage_metakeys(new_meta, prefix)
+        utils.case_insensitive_update(new_meta, massaged)
+        uri = "/"
+        resp, resp_body = self.api.method_post(uri, headers=new_meta)
+        return 200 <= resp.status_code <= 299
+
+
+    def delete_account_metadata(self, prefix=None):
+        """
+        Removes all metadata matching the specified prefix from the account.
+
+        By default, the standard account metadata prefix ('X-Account-Meta-') is
+        prepended to the header name if it isn't present. For non-standard
+        headers, you must include a non-None prefix, such as an empty string.
+        """
+        # Add the metadata prefix, if needed.
+        if prefix is None:
+            prefix = ACCOUNT_META_PREFIX
+        curr_meta = self.api.get_account_metadata(prefix=prefix)
+        for ckey in curr_meta:
+            curr_meta[ckey] = ""
+        new_meta = _massage_metakeys(curr_meta, prefix)
+        uri = "/"
+        resp, resp_body = self.api.method_post(uri, headers=new_meta)
+        return 200 <= resp.status_code <= 299
+
+
+    def get_metadata(self, container, prefix=None):
+        """
+        Returns a dictionary containing the metadata for the container.
+        """
+        headers = self.get_headers(container)
+        if prefix is None:
+            prefix = CONTAINER_META_PREFIX
+        low_prefix = prefix.lower()
+        ret = {}
+        for hkey, hval in list(headers.items()):
+            if hkey.lower().startswith(low_prefix):
+                ret[hkey] = hval
+        return ret
+
+
+    def set_metadata(self, container, metadata, clear=False, prefix=None):
+        """
+        Accepts a dictionary of metadata key/value pairs and updates the
+        specified container metadata with them.
+
+        If 'clear' is True, any existing metadata is deleted and only the
+        passed metadata is retained. Otherwise, the values passed here update
+        the container's metadata.
+
+        By default, the standard container metadata prefix
+        ('X-Container-Meta-') is prepended to the header name if it isn't
+        present. For non-standard headers, you must include a non-None prefix,
+        such as an empty string.
+        """
+        # Add the metadata prefix, if needed.
+        if prefix is None:
+            prefix = CONTAINER_META_PREFIX
+        massaged = _massage_metakeys(metadata, prefix)
+        new_meta = {}
+        if clear:
+            curr_meta = self.api.get_container_metadata(container,
+                    prefix=prefix)
+            for ckey in curr_meta:
+                new_meta[ckey] = ""
+        utils.case_insensitive_update(new_meta, massaged)
+        uri = "/%s" % utils.get_name(container)
+        resp, resp_body = self.api.method_post(uri, headers=new_meta)
+        return 200 <= resp.status_code <= 299
+
+
+    def remove_metadata_key(self, container, key):
+        """
+        Removes the specified key from the container's metadata. If the key
+        does not exist in the metadata, nothing is done.
+        """
+        meta_dict = {key: ""}
+        return self.set_metadata(container, meta_dict)
+
+
+    def delete_metadata(self, container, prefix=None):
+        """
+        Removes all of the container's metadata.
+
+        By default, all metadata beginning with the standard container metadata
+        prefix ('X-Container-Meta-') is removed. If you wish to remove all
+        metadata beginning with a different prefix, you must specify that
+        prefix.
+        """
+        # Add the metadata prefix, if needed.
+        if prefix is None:
+            prefix = CONTAINER_META_PREFIX
+        new_meta = {}
+        curr_meta = self.api.get_container_metadata(container, prefix=prefix)
+        for ckey in curr_meta:
+            new_meta[ckey] = ""
+        uri = "/%s" % utils.get_name(container)
+        resp, resp_body = self.api.method_post(uri, headers=new_meta)
+        return 200 <= resp.status_code <= 299
+
+
+    def get_cdn_metadata(self, container):
+        """
+        Returns a dictionary containing the CDN metadata for the container. If
+        the container does not exist, a NotFound exception is raised. If the
+        container exists, but is not CDN-enabled, a NotCDNEnabled exception is
+        raised.
+        """
+        uri = "%s/%s" % (self.uri_base, utils.get_name(container))
+        resp, resp_body = self.api.cdn_request(uri, "HEAD")
+        return dict(resp.headers)
+
+
+    def set_cdn_metadata(self, container, metadata):
+        """
+        Accepts a dictionary of metadata key/value pairs and updates
+        the specified container metadata with them.
+
+        NOTE: arbitrary metadata headers are not allowed. The only metadata
+        you can update are: X-Log-Retention, X-CDN-enabled, and X-TTL.
+        """
+        allowed = ("x-log-retention", "x-cdn-enabled", "x-ttl")
+        hdrs = {}
+        bad = []
+        for mkey, mval in six.iteritems(metadata):
+            if mkey.lower() not in allowed:
+                bad.append(mkey)
+                continue
+            hdrs[mkey] = str(mval)
+        if bad:
+            raise exc.InvalidCDNMetadata("The only CDN metadata you can "
+                    "update are: X-Log-Retention, X-CDN-enabled, and X-TTL. "
+                    "Received the following illegal item(s): %s" %
+                    ", ".join(bad))
+        uri = "%s/%s" % (self.uri_base, utils.get_name(container))
+        resp, resp_body = self.api.cdn_request(uri, "POST", headers=hdrs)
+        return resp
+
+
+    def get_temp_url(self, container, obj, seconds, method="GET", key=None):
+        """
+        Given a storage object in a container, returns a URL that can be used
+        to access that object. The URL will expire after `seconds` seconds.
+
+        The only methods supported are GET and PUT. Anything else will raise
+        an `InvalidTemporaryURLMethod` exception.
+        """
+        cname = utils.get_name(container)
+        oname = utils.get_name(obj)
+        mod_method = method.upper().strip()
+        if mod_method not in ("GET", "PUT"):
+            raise exc.InvalidTemporaryURLMethod("Method must be either 'GET' "
+                    "or 'PUT'; received '%s'." % method)
+        mgt_url = self.api.management_url
+        mtch = re.search(r"/v\d/", mgt_url)
+        start = mtch.start()
+        base_url = mgt_url[:start]
+        path_parts = (mgt_url[start:], cname, oname)
+        cleaned = (part.strip("/\\") for part in path_parts)
+        pth = "/%s" % "/".join(cleaned)
+        if isinstance(pth, six.string_types):
+            pth = pth.encode(pyrax.get_encoding())
+        expires = int(time.time() + int(seconds))
+        hmac_body = "%s\n%s\n%s" % (mod_method, expires, pth)
+        try:
+            sig = hmac.new(key, hmac_body, hashlib.sha1).hexdigest()
+        except TypeError as e:
+            raise exc.UnicodePathError("Due to a bug in Python, the TempURL "
+                    "function only works with ASCII object paths.")
+        temp_url = "%s%s?temp_url_sig=%s&temp_url_expires=%s" % (base_url, pth,
+                sig, expires)
+        return temp_url
+
+
+    def list_containers_info(self, limit=None, marker=None):
+        """Returns a list of info on Containers.
+
+        For each container, a dict containing the following keys is returned:
+        \code
+            name - the name of the container
+            count - the number of objects in the container
+            bytes - the total bytes in the container
+        """
+        uri = ""
+        qs = utils.dict_to_qs({"limit": limit, "marker": marker})
+        if qs:
+            uri += "%s?%s" % (uri, qs)
+        resp, resp_body = self.api.method_get(uri)
+        return resp_body
+
+
+    def list_public_containers(self):
+        """
+        Returns a list of the names of all CDN-enabled containers.
+        """
+        resp, resp_body = self.api.cdn_request("", "GET")
+        return [cont["name"] for cont in resp_body]
+
+
+    def make_public(self, container, ttl=None):
+        """
+        Enables CDN access for the specified container, and optionally sets the
+        TTL for the container.
+        """
+        return self._set_cdn_access(container, public=True, ttl=ttl)
+
+
+    def make_private(self, container):
+        """
+        Disables CDN access to a container. It may still appear public until
+        its TTL expires.
+        """
+        return self._set_cdn_access(container, public=False)
+
+
+    def _set_cdn_access(self, container, public, ttl=None):
+        """
+        Enables or disables CDN access for the specified container, and
+        optionally sets the TTL for the container when enabling access.
+        """
+        headers = {"X-Cdn-Enabled": "%s" % public}
+        if public and ttl:
+            headers["X-Ttl"] = ttl
+        self.api.cdn_request("/%s" % utils.get_name(container), method="PUT",
+                headers=headers)
+
+
+    def get_cdn_log_retention(self, container):
+        """
+        Returns the status of the setting for CDN log retention for the
+        specified container.
+        """
+        resp, resp_body = self.api.cdn_request("/%s" %
+                utils.get_name(container), method="HEAD")
+        return resp.headers.get("x-log-retention").lower() == "true"
+
+
+    def set_cdn_log_retention(self, container, enabled):
+        """
+        Enables or disables whether CDN access logs for the specified container
+        are collected and stored on Cloud Files.
+        """
+        headers = {"X-Log-Retention": "%s" % enabled}
+        self.api.cdn_request("/%s" % utils.get_name(container), method="PUT",
+                headers=headers)
+
+
+    def get_container_streaming_uri(self, container):
+        """
+        Returns the URI for streaming content, or None if CDN is not enabled.
+        """
+        resp, resp_body = self.api.cdn_request("/%s" %
+                utils.get_name(container), method="HEAD")
+        return resp.headers.get("x-cdn-streaming-uri")
+
+
+    def get_container_ios_uri(self, container):
+        """
+        Returns the iOS URI, or None if CDN is not enabled.
+        """
+        resp, resp_body = self.api.cdn_request("/%s" %
+                utils.get_name(container), method="HEAD")
+        return resp.headers.get("x-cdn-ios-uri")
+
+
+    def set_web_index_page(self, container, page):
+        """
+        Sets the header indicating the index page in a container
+        when creating a static website.
+
+        Note: the container must be CDN-enabled for this to have
+        any effect.
+        """
+        headers = {"X-Container-Meta-Web-Index": "%s" % page}
+        self.api.cdn_request("/%s" % utils.get_name(container), method="POST",
+                headers=headers)
+
+
+    def set_web_error_page(self, container, page):
+        """
+        Sets the header indicating the error page in a container
+        when creating a static website.
+
+        Note: the container must be CDN-enabled for this to have
+        any effect.
+        """
+        headers = {"X-Container-Meta-Web-Error": "%s" % page}
+        self.api.cdn_request("/%s" % utils.get_name(container), method="POST",
+                headers=headers)
+
+
+    def purge_cdn_object(self, container, obj, email_addresses=None):
+        """
+        Removes a CDN-enabled object from public access before the TTL expires.
+        Please note that there is a limit (at this time) of 25 such requests;
+        if you need to purge more than that, you must contact support.
+
+        If one or more email_addresses are included, an email confirming the
+        purge is sent to each address.
+        """
+        cname = utils.get_name(container)
+        oname = utils.get_name(obj)
+        headers = {}
+        if email_addresses:
+            email_addresses = utils.coerce_string_to_list(email_addresses)
+            headers["X-Purge-Email"] = ", ".join(email_addresses)
+        uri = "/%s/%s" % (cname, oname)
+        resp, resp_body = self.api.cdn_request(uri, method="DELETE",
+                headers=headers)
+
+
+    @assure_container
+    def list_objects(self, container, marker=None, limit=None, prefix=None,
+            delimiter=None, end_marker=None, full_listing=False):
+        """
+        Return a list of StorageObjects representing the objects in this
+        container. You can use the marker, end_marker, and limit params to
+        handle pagination, and the prefix and delimiter params to filter the
+        objects returned. By default only the first 10,000 objects are
+        returned; if you need to access more than that, set the 'full_listing'
+        parameter to True.
+        """
+        if full_listing:
+            return container.list_all(prefix=prefix)
+        return container.list(marker=marker, limit=limit, prefix=prefix,
+                delimiter=delimiter, end_marker=end_marker)
+
+
+    @assure_container
+    def list_object_names(self, container, marker=None, limit=None, prefix=None,
+            delimiter=None, end_marker=None, full_listing=False):
+        """
+        Return a list of then names of the objects in this container. You can
+        use the marker, end_marker, and limit params to handle pagination, and
+        the prefix and delimiter params to filter the objects returned. By
+        default only the first 10,000 objects are returned; if you need to
+        access more than that, set the 'full_listing' parameter to True.
+        """
+        return container.list_object_names(marker=marker, limit=limit,
+                prefix=prefix, delimiter=delimiter, end_marker=end_marker,
+                full_listing=full_listing)
+
+
+    @assure_container
+    def object_listing_iterator(self, container, prefix=None):
+        """
+        Returns an iterator that can be used to access the objects within this
+        container. They can be optionally limited by a prefix.
+        """
+        return StorageObjectIterator(container.object_manager, prefix=prefix)
+
+
+    @assure_container
+    def list_subdirs(self, container, marker=None, limit=None, prefix=None,
+            delimiter=None, full_listing=False):
+        """
+        Returns a list of StorageObjects representing the pseudo-subdirectories
+        in the specified container. You can use the marker and limit params to
+        handle pagination, and the prefix param to filter the objects returned.
+        The 'delimiter' parameter is ignored, as the only meaningful value is
+        '/'.
+        """
+        mthd = container.list_all if full_listing else container.list
+        objs = mthd(marker=marker, limit=limit, prefix=prefix, delimiter="/",
+                return_raw=True)
+        sdirs = [obj for obj in objs if "subdir" in obj]
+        for sdir in sdirs:
+            sdir["name"] = sdir["subdir"]
+        mgr = container.object_manager
+        return [StorageObject(mgr, sdir) for sdir in sdirs]
+
+
+    @assure_container
+    def get_object(self, container, obj):
+        """
+        Returns a StorageObject representing the requested object.
+        """
+        return container.get(obj)
+
+
+    @assure_container
+    def create_object(self, container, file_or_path=None, data=None,
+            obj_name=None, content_type=None, etag=None, content_encoding=None,
+            content_length=None, ttl=None, chunked=False, metadata=None,
+            chunk_size=None, headers=None, return_none=False):
+        """
+        Creates or replaces a storage object in the specified container.
+        Returns a StorageObject reference will be returned, unless the
+        'return_none' parameter is True.
+
+        The content of the object can either be a stream of bytes (`data`), or
+        a file on disk (`file_or_path`). The disk file can be either an open
+        file-like object, or an absolute path to the file on disk.
+
+        When creating object from a data stream, you must specify the name of
+        the object to be created in the container via the `obj_name` parameter.
+        When working with a file, though, if no `obj_name` value is specified,
+        the file`s name will be used.
+
+        You may optionally set the `content_type` and `content_encoding`
+        parameters; pyrax will create the appropriate headers when the object
+        is stored. If no `content_type` is specified, the object storage system
+        will make an intelligent guess based on the content of the object.
+
+        If the size of the file is known, it can be passed as `content_length`.
+
+        If you wish for the object to be temporary, specify the time it should
+        be stored in seconds in the `ttl` parameter. If this is specified, the
+        object will be deleted after that number of seconds.
+        """
+        return container.create(file_or_path=file_or_path, data=data,
+                obj_name=obj_name, content_type=content_type, etag=etag,
+                content_encoding=content_encoding,
+                content_length=content_length, ttl=ttl, chunked=chunked,
+                metadata=metadata, chunk_size=chunk_size, headers=headers,
+                return_none=return_none)
+
+
+    @assure_container
+    def fetch_object(self, container, obj, include_meta=False,
+            chunk_size=None, size=None, extra_info=None):
+        """
+        Fetches the object from storage.
+
+        If 'include_meta' is False, only the bytes representing the
+        stored object are returned.
+
+        Note: if 'chunk_size' is defined, you must fully read the object's
+        contents before making another request.
+
+        If 'size' is specified, only the first 'size' bytes of the object will
+        be returned. If the object if smaller than 'size', the entire object is
+        returned.
+
+        When 'include_meta' is True, what is returned from this method is a
+        2-tuple:
+            Element 0: a dictionary containing metadata about the file.
+            Element 1: a stream of bytes representing the object's contents.
+
+        The 'extra_info' parameter is included for backwards compatibility. It
+        is no longer used at all, and will not be modified with swiftclient
+        info, since swiftclient is not used any more.
+        """
+        return container.fetch(obj, include_meta=include_meta,
+                chunk_size=chunk_size, size=size)
+
+
+    @assure_container
+    def fetch_partial(self, container, obj, size):
+        """
+        Returns the first 'size' bytes of an object. If the object is smaller
+        than the specified 'size' value, the entire object is returned.
+        """
+        return container.fetch_partial(obj, size)
+
+
+    @assure_container
+    def download_object(self, container, obj, directory, structure=True):
+        """
+        Fetches the object from storage, and writes it to the specified
+        directory. The directory must exist before calling this method.
+
+        If the object name represents a nested folder structure, such as
+        "foo/bar/baz.txt", that folder structure will be created in the target
+        directory by default. If you do not want the nested folders to be
+        created, pass `structure=False` in the parameters.
+        """
+        return container.download(obj, directory, structure=structure)
+
+
+    @assure_container
+    def delete_object(self, container, obj):
+        """
+        Deletes the object from the specified container.
+
+        The 'obj' parameter can either be the name of the object, or a
+        StorageObject representing the object to be deleted.
+        """
+        return container.delete_object(obj)
+
+
+    def copy_object(self, container, obj, new_container, new_obj_name=None,
+            content_type=None):
+        """
+        Copies the object to the new container, optionally giving it a new name.
+        If you copy to the same container, you must supply a different name.
+
+        You can optionally change the content_type of the object by supplying
+        that in the 'content_type' parameter.
+        """
+        nm = new_obj_name or utils.get_name(obj)
+        uri = "/%s/%s" % (utils.get_name(new_container), nm)
+        copy_from = "/%s/%s" % (utils.get_name(container), utils.get_name(obj))
+        headers = {"X-Copy-From": copy_from,
+                "Content-Length": "0"}
+        if content_type:
+            headers["Content-Type"] = content_type
+        resp, resp_body = self.api.method_put(uri, headers=headers)
+
+
+    @assure_container
+    def change_object_content_type(self, container, obj, new_ctype,
+            guess=False):
+        """
+        Copies object to itself, but applies a new content-type. The guess
+        feature requires the container to be CDN-enabled. If not, then the
+        content-type must be supplied. If using guess with a CDN-enabled
+        container, new_ctype can be set to None. Failure during the put will
+        result in an exception.
+        """
+        cname = utils.get_name(container)
+        oname = utils.get_name(obj)
+        if guess and container.cdn_enabled:
+            # Test against the CDN url to guess the content-type.
+            obj_url = "%s/%s" % (container.cdn_uri, oname)
+            new_ctype = mimetypes.guess_type(obj_url)[0]
+        return self.copy_object(container, obj, container,
+                content_type=new_ctype)
+
+
+    def delete_object_in_seconds(self, cont, obj, seconds, extra_info=None):
+        """
+        Sets the object in the specified container to be deleted after the
+        specified number of seconds.
+
+        The 'extra_info' parameter is included for backwards compatibility. It
+        is no longer used at all, and will not be modified with swiftclient
+        info, since swiftclient is not used any more.
+        """
+        meta = {"X-Delete-After": str(seconds)}
+        self.set_object_metadata(cont, obj, meta, prefix="")
+
+
+    @assure_container
+    def get_object_metadata(self, container, obj):
+        """
+        Returns the metadata for the specified object as a dict.
+        """
+        return container.get_object_metadata(obj)
+
+
+    @assure_container
+    def set_object_metadata(self, container, obj, metadata, clear=False,
+            extra_info=None, prefix=None):
+        """
+        Accepts a dictionary of metadata key/value pairs and updates the
+        specified object metadata with them.
+
+        If 'clear' is True, any existing metadata is deleted and only the
+        passed metadata is retained. Otherwise, the values passed here update
+        the object's metadata.
+
+        'extra_info; is an optional dictionary which will be populated with
+        'status', 'reason', and 'headers' keys from the underlying swiftclient
+        call.
+
+        By default, the standard object metadata prefix ('X-Object-Meta-') is
+        prepended to the header name if it isn't present. For non-standard
+        headers, you must include a non-None prefix, such as an empty string.
+        """
+        return container.set_object_metadata(obj, metadata, clear=clear,
+                prefix=prefix)
+
+
+
 class StorageObject(BaseResource):
     """
     This class represents an object stored in a Container.
@@ -487,6 +1273,18 @@ class StorageObject(BaseResource):
         StorageObjects use their 'name' attribute as their ID.
         """
         return self.name
+
+
+
+class StorageObjectIterator(utils.ResultsIterator):
+    """
+    Allows you to iterate over all the objects in a container, even if they
+    exceed the limit for any single listing call.
+    """
+    def _init_methods(self):
+        self.list_method = self.manager.list
+        # Swift uses the object name as its ID.
+        self.marker_att = "name"
 
 
 
@@ -811,640 +1609,44 @@ class StorageObjectManager(BaseManager):
         return ret
 
 
-
-class StorageObjectIterator(utils.ResultsIterator):
-    """
-    Allows you to iterate over all the objects in a container, even if they
-    exceed the limit for any single listing call.
-    """
-    def _init_methods(self):
-        self.list_method = self.manager.list
-        # Swift uses the object name as its ID.
-        self.marker_att = "name"
-
-
-
-class ContainerManager(BaseManager):
-    def _list(self, uri, obj_class=None, body=None, return_raw=False):
-        """
-        Swift doesn't return listings in the same format as the rest of
-        OpenStack, so this method has to be overriden.
-        """
-        resp, resp_body = self.api.method_get(uri)
-        return [Container(self, res, loaded=False)
-                for res in resp_body if res]
-
-
-    def get(self, item):
-        """
-        Returns a Container matching the specified item. If no such container
-        exists, a NotFound exception is raised.
-        """
-        name = utils.get_name(item)
-        uri = "/%s" % name
-        try:
-            resp, resp_body = self.api.method_head(uri)
-        except exc.NotFound as e:
-            e.message = "No container named '%s' exists." % name
-            raise e
-        hdrs = resp.headers
-        data = {"bytes": hdrs.get("x-container-bytes-used"),
-                "count": hdrs.get("x-container-object-count"),
-                "name": name}
-        return Container(self, data, loaded=False)
-
-
-    def create(self, name, metadata=None, prefix=None, *args, **kwargs):
-        """
-        Creates a new container, and returns a Container object that represents
-        that contianer. If a container by the same name already exists, no
-        exception is raised; instead, a reference to that existing container is
-        returned.
-        """
-        uri = "/%s" % name
-        headers = {}
-        if metadata:
-            metadata = _massage_metakeys(metadata, CONTAINER_META_PREFIX)
-            headers = metadata
-        resp, resp_body = self.api.method_put(uri, headers=headers)
-        if resp.status_code in (201, 202):
-            return Container(self, {"name": name})
-        elif resp.status_code == 400:
-            raise exc.ClientException("oops")
-
-
-    def delete(self, container, del_objects=False):
-        """
-        Deletes the specified container. If the container contains objects, the
-        command will fail unless 'del_objects' is passed as True. In that case,
-        each object will be deleted first, and then the container.
-        """
-        if del_objects:
-            nms = self.list_object_names(container)
-            self.api.bulk_delete(container, nms, async=False)
-        uri = "/%s" % utils.get_name(container)
-        resp, resp_body = self.api.method_delete(uri)
-
-
-    def _create_body(self, name, *args, **kwargs):
-        """
-        Container creation requires no body.
-        """
-        return None
-
-
-    def get_account_headers(self):
-        """
-        Return the headers for the account. This includes all the headers, not
-        just the account-specific headers. The calling program is responsible
-        for only using the ones that it needs.
-        """
-        resp, resp_body = self.api.method_head("/")
-        return resp.headers
-
-
-    def get_headers(self, container):
-        """
-        Return the headers for the specified container.
-        """
-        uri = "/%s" % utils.get_name(container)
-        resp, resp_body = self.api.method_head(uri)
-        return resp.headers
-
-
-    def set_account_metadata(self, metadata, clear=False, prefix=None):
+    def set_metadata(self, obj, metadata, clear=False, prefix=None):
         """
         Accepts a dictionary of metadata key/value pairs and updates the
-        account metadata with them.
+        specified object metadata with them.
 
         If 'clear' is True, any existing metadata is deleted and only the
         passed metadata is retained. Otherwise, the values passed here update
-        the account's metadata.
+        the object's metadata.
 
-        By default, the standard account metadata prefix ('X-Account-Meta-') is
+        By default, the standard object metadata prefix ('X-Object-Meta-') is
         prepended to the header name if it isn't present. For non-standard
         headers, you must include a non-None prefix, such as an empty string.
         """
         # Add the metadata prefix, if needed.
         if prefix is None:
-            prefix = ACCOUNT_META_PREFIX
+            prefix = OBJECT_META_PREFIX
         massaged = _massage_metakeys(metadata, prefix)
+        cname = utils.get_name(container)
+        oname = utils.get_name(obj)
         new_meta = {}
-        if clear:
-            curr_meta = self.api.get_account_metadata(prefix=prefix)
-            for ckey in curr_meta:
-                new_meta[ckey] = ""
-            new_meta = _massage_metakeys(new_meta, prefix)
+        # Note that the API for object POST is the opposite of that for
+        # container POST: for objects, all current metadata is deleted,
+        # whereas for containers you need to set the values to an empty
+        # string to delete them.
+        if not clear:
+            obj_meta = self.get_metadata(obj)
+            new_meta = _massage_metakeys(obj_meta, self.object_meta_prefix)
         utils.case_insensitive_update(new_meta, massaged)
-        uri = "/"
-        resp, resp_body = self.api.method_post(uri, headers=new_meta)
-        return 200 <= resp.status_code <= 299
-
-
-    def delete_account_metadata(self, prefix=None):
-        """
-        Removes all metadata matching the specified prefix from the account.
-
-        By default, the standard account metadata prefix ('X-Account-Meta-') is
-        prepended to the header name if it isn't present. For non-standard
-        headers, you must include a non-None prefix, such as an empty string.
-        """
-        # Add the metadata prefix, if needed.
-        if prefix is None:
-            prefix = ACCOUNT_META_PREFIX
-        curr_meta = self.api.get_account_metadata(prefix=prefix)
-        for ckey in curr_meta:
-            curr_meta[ckey] = ""
-        new_meta = _massage_metakeys(curr_meta, prefix)
-        uri = "/"
-        resp, resp_body = self.api.method_post(uri, headers=new_meta)
-        return 200 <= resp.status_code <= 299
-
-
-    def get_metadata(self, container, prefix=None):
-        """
-        Returns a dictionary containing the metadata for the container.
-        """
-        headers = self.get_headers(container)
-        if prefix is None:
-            prefix = CONTAINER_META_PREFIX
-        low_prefix = prefix.lower()
-        ret = {}
-        for hkey, hval in list(headers.items()):
-            if hkey.lower().startswith(low_prefix):
-                ret[hkey] = hval
-        return ret
-
-
-    def set_metadata(self, container, metadata, clear=False, prefix=None):
-        """
-        Accepts a dictionary of metadata key/value pairs and updates the
-        specified container metadata with them.
-
-        If 'clear' is True, any existing metadata is deleted and only the
-        passed metadata is retained. Otherwise, the values passed here update
-        the container's metadata.
-
-        By default, the standard container metadata prefix
-        ('X-Container-Meta-') is prepended to the header name if it isn't
-        present. For non-standard headers, you must include a non-None prefix,
-        such as an empty string.
-        """
-        # Add the metadata prefix, if needed.
-        if prefix is None:
-            prefix = CONTAINER_META_PREFIX
-        massaged = _massage_metakeys(metadata, prefix)
-        new_meta = {}
-        if clear:
-            curr_meta = self.api.get_container_metadata(container,
-                    prefix=prefix)
-            for ckey in curr_meta:
-                new_meta[ckey] = ""
-        utils.case_insensitive_update(new_meta, massaged)
-        uri = "/%s" % utils.get_name(container)
-        resp, resp_body = self.api.method_post(uri, headers=new_meta)
-        return 200 <= resp.status_code <= 299
-
-
-    def remove_metadata_key(self, container, key):
-        """
-        Removes the specified key from the container's metadata. If the key
-        does not exist in the metadata, nothing is done.
-        """
-        meta_dict = {key: ""}
-        return self.set_metadata(container, meta_dict)
-
-
-    def delete_metadata(self, container, prefix=None):
-        """
-        Removes all of the container's metadata.
-
-        By default, all metadata beginning with the standard container metadata
-        prefix ('X-Container-Meta-') is removed. If you wish to remove all
-        metadata beginning with a different prefix, you must specify that
-        prefix.
-        """
-        # Add the metadata prefix, if needed.
-        if prefix is None:
-            prefix = CONTAINER_META_PREFIX
-        new_meta = {}
-        curr_meta = self.api.get_container_metadata(container, prefix=prefix)
-        for ckey in curr_meta:
-            new_meta[ckey] = ""
-        uri = "/%s" % utils.get_name(container)
-        resp, resp_body = self.api.method_post(uri, headers=new_meta)
-        return 200 <= resp.status_code <= 299
-
-
-    def get_cdn_metadata(self, container):
-        """
-        Returns a dictionary containing the CDN metadata for the container. If
-        the container does not exist, a NotFound exception is raised. If the
-        container exists, but is not CDN-enabled, a NotCDNEnabled exception is
-        raised.
-        """
-        uri = "%s/%s" % (self.uri_base, utils.get_name(container))
-        resp, resp_body = self.api.cdn_request(uri, "HEAD")
-        return dict(resp.headers)
-
-
-    def set_cdn_metadata(self, container, metadata):
-        """
-        Accepts a dictionary of metadata key/value pairs and updates
-        the specified container metadata with them.
-
-        NOTE: arbitrary metadata headers are not allowed. The only metadata
-        you can update are: X-Log-Retention, X-CDN-enabled, and X-TTL.
-        """
-        allowed = ("x-log-retention", "x-cdn-enabled", "x-ttl")
-        hdrs = {}
-        bad = []
-        for mkey, mval in six.iteritems(metadata):
-            if mkey.lower() not in allowed:
-                bad.append(mkey)
-                continue
-            hdrs[mkey] = str(mval)
-        if bad:
-            raise exc.InvalidCDNMetadata("The only CDN metadata you can "
-                    "update are: X-Log-Retention, X-CDN-enabled, and X-TTL. "
-                    "Received the following illegal item(s): %s" %
-                    ", ".join(bad))
-        uri = "%s/%s" % (self.uri_base, utils.get_name(container))
-        resp, resp_body = self.api.cdn_request(uri, "POST", headers=hdrs)
-        return resp
-
-
-    def get_temp_url(self, container, obj, seconds, method="GET", key=None):
-        """
-        Given a storage object in a container, returns a URL that can be used
-        to access that object. The URL will expire after `seconds` seconds.
-
-        The only methods supported are GET and PUT. Anything else will raise
-        an `InvalidTemporaryURLMethod` exception.
-        """
-        cname = utils.get_name(container)
-        oname = utils.get_name(obj)
-        mod_method = method.upper().strip()
-        if mod_method not in ("GET", "PUT"):
-            raise exc.InvalidTemporaryURLMethod("Method must be either 'GET' "
-                    "or 'PUT'; received '%s'." % method)
-        mgt_url = self.api.management_url
-        mtch = re.search(r"/v\d/", mgt_url)
-        start = mtch.start()
-        base_url = mgt_url[:start]
-        path_parts = (mgt_url[start:], cname, oname)
-        cleaned = (part.strip("/\\") for part in path_parts)
-        pth = "/%s" % "/".join(cleaned)
-        if isinstance(pth, six.string_types):
-            pth = pth.encode(pyrax.get_encoding())
-        expires = int(time.time() + int(seconds))
-        hmac_body = "%s\n%s\n%s" % (mod_method, expires, pth)
-        try:
-            sig = hmac.new(key, hmac_body, hashlib.sha1).hexdigest()
-        except TypeError as e:
-            raise exc.UnicodePathError("Due to a bug in Python, the TempURL "
-                    "function only works with ASCII object paths.")
-        temp_url = "%s%s?temp_url_sig=%s&temp_url_expires=%s" % (base_url, pth,
-                sig, expires)
-        return temp_url
-
-
-    def list_containers_info(self, limit=None, marker=None):
-        """Returns a list of info on Containers.
-
-        For each container, a dict containing the following keys is returned:
-        \code
-            name - the name of the container
-            count - the number of objects in the container
-            bytes - the total bytes in the container
-        """
-        uri = ""
-        qs = utils.dict_to_qs({"limit": limit, "marker": marker})
-        if qs:
-            uri += "%s?%s" % (uri, qs)
-        resp, resp_body = self.api.method_get(uri)
-        return resp_body
-
-
-    def list_public_containers(self):
-        """
-        Returns a list of the names of all CDN-enabled containers.
-        """
-        resp, resp_body = self.api.cdn_request("", "GET")
-        return [cont["name"] for cont in resp_body]
-
-
-    def set_cdn_access(self, container, public, ttl=None):
-        """
-        Enables or disables CDN access for the specified container, and
-        optionally sets the TTL for the container when enabling access.
-        """
-        headers = {"X-Cdn-Enabled": "%s" % public}
-        if public and ttl:
-            headers["X-Ttl"] = ttl
-        self.api.cdn_request("/%s" % utils.get_name(container), method="PUT",
-                headers=headers)
-
-
-    def get_cdn_log_retention(self, container):
-        """
-        Returns the status of the setting for CDN log retention for the
-        specified container.
-        """
-        resp, resp_body = self.api.cdn_request("/%s" %
-                utils.get_name(container), method="HEAD")
-        return resp.headers.get("x-log-retention").lower() == "true"
-
-
-    def set_cdn_log_retention(self, container, enabled):
-        """
-        Enables or disables whether CDN access logs for the specified container
-        are collected and stored on Cloud Files.
-        """
-        headers = {"X-Log-Retention": "%s" % enabled}
-        self.api.cdn_request("/%s" % utils.get_name(container), method="PUT",
-                headers=headers)
-
-
-    def get_container_streaming_uri(self, container):
-        """
-        Returns the URI for streaming content, or None if CDN is not enabled.
-        """
-        resp, resp_body = self.api.cdn_request("/%s" %
-                utils.get_name(container), method="HEAD")
-        return resp.headers.get("x-cdn-streaming-uri")
-
-
-    def get_container_ios_uri(self, container):
-        """
-        Returns the iOS URI, or None if CDN is not enabled.
-        """
-        resp, resp_body = self.api.cdn_request("/%s" %
-                utils.get_name(container), method="HEAD")
-        return resp.headers.get("x-cdn-ios-uri")
-
-
-    def set_container_web_index_page(self, container, page):
-        """
-        Sets the header indicating the index page in a container
-        when creating a static website.
-
-        Note: the container must be CDN-enabled for this to have
-        any effect.
-        """
-        headers = {"X-Container-Meta-Web-Index": "%s" % page}
-        self.api.cdn_request("/%s" % utils.get_name(container), method="POST",
-                headers=headers)
-
-
-    def set_container_web_error_page(self, container, page):
-        """
-        Sets the header indicating the error page in a container
-        when creating a static website.
-
-        Note: the container must be CDN-enabled for this to have
-        any effect.
-        """
-        headers = {"X-Container-Meta-Web-Error": "%s" % page}
-        self.api.cdn_request("/%s" % utils.get_name(container), method="POST",
-                headers=headers)
-
-
-    def purge_cdn_object(self, container, obj, email_addresses=None):
-        """
-        Removes a CDN-enabled object from public access before the TTL expires.
-        Please note that there is a limit (at this time) of 25 such requests;
-        if you need to purge more than that, you must contact support.
-
-        If one or more email_addresses are included, an email confirming the
-        purge is sent to each address.
-        """
-        cname = utils.get_name(container)
-        oname = utils.get_name(obj)
-        headers = {}
-        if email_addresses:
-            email_addresses = utils.coerce_string_to_list(email_addresses)
-            headers["X-Purge-Email"] = ", ".join(email_addresses)
-        uri = "/%s/%s" % (cname, oname)
-        resp, resp_body = self.api.cdn_request(uri, method="DELETE",
-                headers=headers)
-
-
-    @assure_container
-    def list_objects(self, container, marker=None, limit=None, prefix=None,
-            delimiter=None, end_marker=None, full_listing=False):
-        """
-        Return a list of StorageObjects representing the objects in this
-        container. You can use the marker, end_marker, and limit params to
-        handle pagination, and the prefix and delimiter params to filter the
-        objects returned. By default only the first 10,000 objects are
-        returned; if you need to access more than that, set the 'full_listing'
-        parameter to True.
-        """
-        if full_listing:
-            return container.list_all(prefix=prefix)
-        return container.list(marker=marker, limit=limit, prefix=prefix,
-                delimiter=delimiter, end_marker=end_marker)
-
-
-    @assure_container
-    def list_object_names(self, container, marker=None, limit=None, prefix=None,
-            delimiter=None, end_marker=None, full_listing=False):
-        """
-        Return a list of then names of the objects in this container. You can
-        use the marker, end_marker, and limit params to handle pagination, and
-        the prefix and delimiter params to filter the objects returned. By
-        default only the first 10,000 objects are returned; if you need to
-        access more than that, set the 'full_listing' parameter to True.
-        """
-        return container.list_object_names(marker=marker, limit=limit,
-                prefix=prefix, delimiter=delimiter, end_marker=end_marker,
-                full_listing=full_listing)
-
-
-    @assure_container
-    def object_listing_iterator(self, container, prefix=None):
-        """
-        Returns an iterator that can be used to access the objects within this
-        container. They can be optionally limited by a prefix.
-        """
-        return StorageObjectIterator(container.object_manager, prefix=prefix)
-
-
-    @assure_container
-    def list_subdirs(self, container, marker=None, limit=None, prefix=None,
-            delimiter=None, full_listing=False):
-        """
-        Returns a list of StorageObjects representing the pseudo-subdirectories
-        in the specified container. You can use the marker and limit params to
-        handle pagination, and the prefix param to filter the objects returned.
-        The 'delimiter' parameter is ignored, as the only meaningful value is
-        '/'.
-        """
-        mthd = container.list_all if full_listing else container.list
-        objs = mthd(marker=marker, limit=limit, prefix=prefix, delimiter="/",
-                return_raw=True)
-        sdirs = [obj for obj in objs if "subdir" in obj]
-        for sdir in sdirs:
-            sdir["name"] = sdir["subdir"]
-        mgr = container.object_manager
-        return [StorageObject(mgr, sdir) for sdir in sdirs]
-
-
-    @assure_container
-    def get_object(self, container, obj):
-        """
-        Returns a StorageObject representing the requested object.
-        """
-        return container.get(obj)
-
-
-    @assure_container
-    def create_object(self, container, file_or_path=None, data=None,
-            obj_name=None, content_type=None, etag=None, content_encoding=None,
-            content_length=None, ttl=None, chunked=False, metadata=None,
-            chunk_size=None, headers=None, return_none=False):
-        """
-        Creates or replaces a storage object in the specified container.
-        Returns a StorageObject reference will be returned, unless the
-        'return_none' parameter is True.
-
-        The content of the object can either be a stream of bytes (`data`), or
-        a file on disk (`file_or_path`). The disk file can be either an open
-        file-like object, or an absolute path to the file on disk.
-
-        When creating object from a data stream, you must specify the name of
-        the object to be created in the container via the `obj_name` parameter.
-        When working with a file, though, if no `obj_name` value is specified,
-        the file`s name will be used.
-
-        You may optionally set the `content_type` and `content_encoding`
-        parameters; pyrax will create the appropriate headers when the object
-        is stored. If no `content_type` is specified, the object storage system
-        will make an intelligent guess based on the content of the object.
-
-        If the size of the file is known, it can be passed as `content_length`.
-
-        If you wish for the object to be temporary, specify the time it should
-        be stored in seconds in the `ttl` parameter. If this is specified, the
-        object will be deleted after that number of seconds.
-        """
-        return container.create(file_or_path=file_or_path, data=data,
-                obj_name=obj_name, content_type=content_type, etag=etag,
-                content_encoding=content_encoding,
-                content_length=content_length, ttl=ttl, chunked=chunked,
-                metadata=metadata, chunk_size=chunk_size, headers=headers,
-                return_none=return_none)
-
-
-    @assure_container
-    def fetch_object(self, container, obj, include_meta=False,
-            chunk_size=None, size=None, extra_info=None):
-        """
-        Fetches the object from storage.
-
-        If 'include_meta' is False, only the bytes representing the
-        stored object are returned.
-
-        Note: if 'chunk_size' is defined, you must fully read the object's
-        contents before making another request.
-
-        If 'size' is specified, only the first 'size' bytes of the object will
-        be returned. If the object if smaller than 'size', the entire object is
-        returned.
-
-        When 'include_meta' is True, what is returned from this method is a
-        2-tuple:
-            Element 0: a dictionary containing metadata about the file.
-            Element 1: a stream of bytes representing the object's contents.
-
-        The 'extra_info' parameter is included for backwards compatibility. It
-        is no longer used at all, and will not be modified with swiftclient
-        info, since swiftclient is not used any more.
-        """
-        return container.fetch(obj, include_meta=include_meta,
-                chunk_size=chunk_size, size=size)
-
-
-    @assure_container
-    def fetch_partial(self, container, obj, size):
-        """
-        Returns the first 'size' bytes of an object. If the object is smaller
-        than the specified 'size' value, the entire object is returned.
-        """
-        return container.fetch_partial(obj, size)
-
-
-    @assure_container
-    def download_object(self, container, obj, directory, structure=True):
-        """
-        Fetches the object from storage, and writes it to the specified
-        directory. The directory must exist before calling this method.
-
-        If the object name represents a nested folder structure, such as
-        "foo/bar/baz.txt", that folder structure will be created in the target
-        directory by default. If you do not want the nested folders to be
-        created, pass `structure=False` in the parameters.
-        """
-        return container.download(obj, directory, structure=structure)
-
-
-    @assure_container
-    def delete_object(self, container, obj):
-        """
-        Deletes the object from the specified container.
-
-        The 'obj' parameter can either be the name of the object, or a
-        StorageObject representing the object to be deleted.
-        """
-        return container.delete_object(obj)
-
-
-    def copy_object(self, container, obj, new_container, new_obj_name=None,
-            content_type=None):
-        """
-        Copies the object to the new container, optionally giving it a new name.
-        If you copy to the same container, you must supply a different name.
-
-        You can optionally change the content_type of the object by supplying
-        that in the 'content_type' parameter.
-        """
-        nm = new_obj_name or utils.get_name(obj)
-        uri = "/%s/%s" % (utils.get_name(new_container), nm)
-        copy_from = "/%s/%s" % (utils.get_name(container), utils.get_name(obj))
-        headers = {"X-Copy-From": copy_from,
-                "Content-Length": "0"}
-        if content_type:
-            headers["Content-Type"] = content_type
-        resp, resp_body = self.api.method_put(uri, headers=headers)
-
-
-    @assure_container
-    def change_object_content_type(self, container, obj, new_ctype,
-            guess=False):
-        """
-        Copies object to itself, but applies a new content-type. The guess
-        feature requires the container to be CDN-enabled. If not, then the
-        content-type must be supplied. If using guess with a CDN-enabled
-        container, new_ctype can be set to None. Failure during the put will
-        result in an exception.
-        """
-        cname = utils.get_name(container)
-        oname = utils.get_name(obj)
-        if guess and container.cdn_enabled:
-            # Test against the CDN url to guess the content-type.
-            obj_url = "%s/%s" % (container.cdn_uri, oname)
-            new_ctype = mimetypes.guess_type(obj_url)[0]
-        return self.copy_object(container, obj, container,
-                content_type=new_ctype)
-
-
-    @assure_container
-    def get_object_metadata(self, container, obj):
-        """
-        Returns the metadata for the specified object as a dict.
-        """
-        return container.get_object_metadata(obj)
+        # Remove any empty values, since the object metadata API will
+        # store them.
+        to_pop = []
+        for key, val in six.iteritems(new_meta):
+            if not val:
+                to_pop.append(key)
+        for key in to_pop:
+            new_meta.pop(key)
+        uri = "%s/%s" % (cname, oname)
+        resp, resp_body = self.api.method_post(uri, body=new_meta)
 
 
 
@@ -1676,7 +1878,7 @@ class StorageClient(BaseClient):
         Enables CDN access for the specified container, and optionally sets the
         TTL for the container.
         """
-        return self._manager.set_cdn_access(container, public=True, ttl=ttl)
+        return self._manager.make_public(container, ttl=ttl)
 
 
     def make_container_private(self, container):
@@ -1684,7 +1886,7 @@ class StorageClient(BaseClient):
         Disables CDN access to a container. It may still appear public until
         its TTL expires.
         """
-        return self._manager.set_cdn_access(container, public=False)
+        return self._manager.make_private(container)
 
 
     def get_cdn_log_retention(self, container):
@@ -1725,7 +1927,7 @@ class StorageClient(BaseClient):
         Note: the container must be CDN-enabled for this to have
         any effect.
         """
-        return self._manager.set_container_web_index_page(container, page)
+        return self._manager.set_web_index_page(container, page)
 
 
     def set_container_web_error_page(self, container, page):
@@ -1736,7 +1938,7 @@ class StorageClient(BaseClient):
         Note: the container must be CDN-enabled for this to have
         any effect.
         """
-        return self._manager.set_container_web_error_page(container, page)
+        return self._manager.set_web_error_page(container, page)
 
 
     def purge_cdn_object(self, container, obj, email_addresses=None):
@@ -1861,15 +2063,7 @@ class StorageClient(BaseClient):
 
     def get_object_metadata(self, container, obj):
         """Retrieves any metadata for the specified object."""
-        cname = self._resolve_name(container)
-        oname = self._resolve_name(obj)
-        headers = self.connection.head_object(cname, oname)
-        prfx = self.object_meta_prefix.lower()
-        ret = {}
-        for hkey, hval in six.iteritems(headers):
-            if hkey.lower().startswith(prfx):
-                ret[hkey] = hval
-        return ret
+        return self._manager.get_object_metadata(container, obj)
 
 
     def set_object_metadata(self, container, obj, metadata, clear=False,
@@ -1890,31 +2084,8 @@ class StorageClient(BaseClient):
         prepended to the header name if it isn't present. For non-standard
         headers, you must include a non-None prefix, such as an empty string.
         """
-        # Add the metadata prefix, if needed.
-        if prefix is None:
-            prefix = self.object_meta_prefix
-        massaged = self._massage_metakeys(metadata, prefix)
-        cname = self._resolve_name(container)
-        oname = self._resolve_name(obj)
-        new_meta = {}
-        # Note that the API for object POST is the opposite of that for
-        # container POST: for objects, all current metadata is deleted,
-        # whereas for containers you need to set the values to an empty
-        # string to delete them.
-        if not clear:
-            obj_meta = self.get_object_metadata(cname, oname)
-            new_meta = self._massage_metakeys(obj_meta, self.object_meta_prefix)
-        utils.case_insensitive_update(new_meta, massaged)
-        # Remove any empty values, since the object metadata API will
-        # store them.
-        to_pop = []
-        for key, val in six.iteritems(new_meta):
-            if not val:
-                to_pop.append(key)
-        for key in to_pop:
-            new_meta.pop(key)
-        self.connection.post_object(cname, oname, new_meta,
-                response_dict=extra_info)
+        return self._manager.set_object_metadata(container, obj, metadata,
+                clear=clear, prefix=prefix)
 
 
     def remove_object_metadata_key(self, container, obj, key, prefix=None):
@@ -1958,8 +2129,7 @@ class StorageClient(BaseClient):
         is no longer used at all, and will not be modified with swiftclient
         info, since swiftclient is not used any more.
         """
-        meta = {"X-Delete-After": str(seconds)}
-        self.set_object_metadata(cont, obj, meta, prefix="")
+        return self._manager.delete_object_in_seconds(cont, obj, seconds)
 
 
     def get_object(self, container, obj):
@@ -2211,9 +2381,10 @@ class StorageClient(BaseClient):
         """
         new_obj_etag = self.copy_object(container, obj, new_container,
                 new_obj_name=new_obj_name, content_type=content_type)
-        if new_obj_etag:
-            # Copy succeeded; delete the original.
-            self.delete_object(container, obj)
+        if not new_obj_etag:
+            return
+        # Copy succeeded; delete the original.
+        self.delete_object(container, obj)
         if new_reference:
             nm = new_obj_name or utils.get_name(obj)
             return self.get_object(new_container, nm)
