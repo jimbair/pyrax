@@ -752,9 +752,15 @@ class ContainerManager(BaseManager):
             headers = metadata
         resp, resp_body = self.api.method_put(uri, headers=headers)
         if resp.status_code in (201, 202):
-            return Container(self, {"name": name})
+            hresp, hresp_body = self.api.method_head(uri)
+            num_obj = int(hresp.headers.get("x-container-object-count", "0"))
+            num_bytes = int(hresp.headers.get("x-container-bytes-used", "0"))
+            cont_info = {"name": name, "object_count": num_obj,
+                    "total_bytes": num_bytes}
+            return Container(self, cont_info)
         elif resp.status_code == 400:
-            raise exc.ClientException("oops")
+            raise exc.ClientException("Container creation failed: %s" %
+                    resp_body)
 
 
     def delete(self, container, del_objects=False):
