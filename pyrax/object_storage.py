@@ -2031,7 +2031,7 @@ class StorageObjectManager(BaseManager):
         for key in to_pop:
             new_meta.pop(key)
         uri = "/%s/%s" % (cname, oname)
-        resp, resp_body = self.api.method_post(uri, body=new_meta)
+        resp, resp_body = self.api.method_post(uri, headers=new_meta)
 
 
     def remove_metadata_key(self, obj, key):
