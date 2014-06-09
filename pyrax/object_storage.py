@@ -261,6 +261,18 @@ class Container(BaseResource):
         return self.manager.make_private(self)
 
 
+    def purge_cdn_object(self, obj, email_addresses=None):
+        """
+        Removes a CDN-enabled object from public access before the TTL expires.
+        Please note that there is a limit (at this time) of 25 such requests;
+        if you need to purge more than that, you must contact support.
+
+        If one or more email_addresses are included, an email confirming the
+        purge is sent to each address.
+        """
+        return self.object_manager.purge(obj, email_addresses=email_addresses)
+
+
     def get(self, item):
         """
         Returns a StorageObject matching the specified item. If no such object
@@ -502,6 +514,18 @@ class Container(BaseResource):
         return self.object_manager.delete(obj)
 
 
+    def delete_object_in_seconds(self, obj, seconds, extra_info=None):
+        """
+        Sets the object in this container to be deleted after the specified
+        number of seconds.
+
+        The 'extra_info' parameter is included for backwards compatibility. It
+        is no longer used at all, and will not be modified with swiftclient
+        info, since swiftclient is not used any more.
+        """
+        return self.manager.delete_object_in_seconds(self, obj, seconds)
+
+
     def delete_all_objects(self, async=False):
         """
         Deletes all objects from this container.
@@ -534,7 +558,7 @@ class Container(BaseResource):
                 new_obj_name=new_obj_name, content_type=content_type)
 
 
-    def move_object(self, container, obj, new_container, new_obj_name=None,
+    def move_object(self, obj, new_container, new_obj_name=None,
             new_reference=False, content_type=None, extra_info=None):
         """
         Works just like copy_object, except that the source object is deleted
@@ -986,6 +1010,12 @@ class ContainerManager(BaseManager):
         The only methods supported are GET and PUT. Anything else will raise
         an `InvalidTemporaryURLMethod` exception.
         """
+        if not key:
+            key = self.api.get_temp_url_key()
+        if not key:
+            raise exc.MissingTemporaryURLKey("You must set the key for "
+                    "Temporary URLs before you can generate them. This is "
+                    "done via the `set_temp_url_key()` method.")
         cname = utils.get_name(container)
         oname = utils.get_name(obj)
         mod_method = method.upper().strip()
@@ -1130,6 +1160,7 @@ class ContainerManager(BaseManager):
                 headers=headers)
 
 
+    @assure_container
     def purge_cdn_object(self, container, obj, email_addresses=None):
         """
         Removes a CDN-enabled object from public access before the TTL expires.
@@ -1139,15 +1170,7 @@ class ContainerManager(BaseManager):
         If one or more email_addresses are included, an email confirming the
         purge is sent to each address.
         """
-        cname = utils.get_name(container)
-        oname = utils.get_name(obj)
-        headers = {}
-        if email_addresses:
-            email_addresses = utils.coerce_string_to_list(email_addresses)
-            headers["X-Purge-Email"] = ", ".join(email_addresses)
-        uri = "/%s/%s" % (cname, oname)
-        resp, resp_body = self.api.cdn_request(uri, method="DELETE",
-                headers=headers)
+        return container.purge_cdn_object(obj, email_addresses=email_addresses)
 
 
     @assure_container
@@ -1326,6 +1349,8 @@ class ContainerManager(BaseManager):
         Copies the object to the new container, optionally giving it a new name.
         If you copy to the same container, you must supply a different name.
 
+        Returns the etag of the newly-copied object.
+
         You can optionally change the content_type of the object by supplying
         that in the 'content_type' parameter.
         """
@@ -1337,6 +1362,34 @@ class ContainerManager(BaseManager):
         if content_type:
             headers["Content-Type"] = content_type
         resp, resp_body = self.api.method_put(uri, headers=headers)
+        return resp.headers.get("etag")
+
+
+    def move_object(self, container, obj, new_container, new_obj_name=None,
+            new_reference=False, content_type=None):
+        """
+        Works just like copy_object, except that the source object is deleted
+        after a successful copy.
+
+        You can optionally change the content_type of the object by supplying
+        that in the 'content_type' parameter.
+
+        NOTE: any references to the original object will no longer be valid;
+        you will have to get a reference to the new object by passing True for
+        the 'new_reference' parameter. When this is True, a reference to the
+        newly moved object is returned. Otherwise, the etag for the moved
+        object is returned.
+        """
+        new_obj_etag = self.copy_object(container, obj, new_container,
+                new_obj_name=new_obj_name, content_type=content_type)
+        if not new_obj_etag:
+            return
+        # Copy succeeded; delete the original.
+        self.delete_object(container, obj)
+        if new_reference:
+            nm = new_obj_name or utils.get_name(obj)
+            return self.get_object(new_container, nm)
+        return new_obj_etag
 
 
     @assure_container
@@ -1368,8 +1421,8 @@ class ContainerManager(BaseManager):
         is no longer used at all, and will not be modified with swiftclient
         info, since swiftclient is not used any more.
         """
-        meta = {"X-Delete-After": str(seconds)}
-        self.set_object_metadata(cont, obj, meta, prefix="")
+        meta = {"X-Delete-After": seconds}
+        self.set_object_metadata(cont, obj, meta, clear=True, prefix="")
 
 
     @assure_container
@@ -1409,10 +1462,13 @@ class StorageObject(BaseResource):
     This class represents an object stored in a Container.
     """
     def __init__(self, manager, info, *args, **kwargs):
-        # Get the name of the object's container from the manager.
-        info["container"] = manager.name
+        self._container = None
         return super(StorageObject, self).__init__(manager, info, *args,
                 **kwargs)
+
+
+    def __repr__(self):
+        return "<Object '%s' (%s)>" % (self.name, self.content_type)
 
 
     @property
@@ -1421,6 +1477,154 @@ class StorageObject(BaseResource):
         StorageObjects use their 'name' attribute as their ID.
         """
         return self.name
+
+
+    @property
+    def total_bytes(self):
+        """ Alias for backwards compatibility."""
+        return self.bytes
+
+
+    @property
+    def etag(self):
+        """ Alias for backwards compatibility."""
+        return self.hash
+
+
+    @property
+    def container(self):
+        if not self._container:
+            self._container = self.manager.container
+        return self._container
+
+
+    def get(self, include_meta=False, chunk_size=None):
+        """
+        Fetches the object from storage.
+
+        If 'include_meta' is False, only the bytes representing the
+        file is returned.
+
+        Note: if 'chunk_size' is defined, you must fully read the object's
+        contents before making another request.
+
+        When 'include_meta' is True, what is returned from this method is a
+        2-tuple:
+            Element 0: a dictionary containing metadata about the file.
+            Element 1: a stream of bytes representing the object's contents.
+        """
+        return self.manager.fetch(obj=self, include_meta=include_meta,
+                chunk_size=chunk_size)
+    # Changing the name of this method to 'fetch', as 'get' is overloaded.
+    fetch = get
+
+
+    def download(self, directory, structure=True):
+        """
+        Fetches the object from storage, and writes it to the specified
+        directory. The directory must exist before calling this method.
+
+        If the object name represents a nested folder structure, such as
+        "foo/bar/baz.txt", that folder structure will be created in the target
+        directory by default. If you do not want the nested folders to be
+        created, pass `structure=False` in the parameters.
+        """
+        return self.manager.download(self, directory, structure=structure)
+
+
+    def copy(self, new_container, new_obj_name=None, extra_info=None):
+        """
+        Copies this object to the new container, optionally giving it a new
+        name.  If you copy to the same container, you must supply a different
+        name.
+        """
+        return self.container.copy_object(self, new_container,
+                new_obj_name=new_obj_name)
+
+
+    def move(self, new_container, new_obj_name=None, extra_info=None):
+        """
+        Works just like copy_object, except that this object is deleted after a
+        successful copy. This means that this storage_object reference will no
+        longer be valid.
+        """
+        return self.container.move_object(self, new_container,
+                new_obj_name=new_obj_name)
+
+
+    def change_content_type(self, new_ctype, guess=False):
+        """
+        Copies object to itself, but applies a new content-type. The guess
+        feature requires the container to be CDN-enabled. If not then the
+        content-type must be supplied. If using guess with a CDN-enabled
+        container, new_ctype can be set to None.
+        Failure during the put will result in a swift exception.
+        """
+        self.container.change_object_content_type(self, new_ctype=new_ctype,
+                guess=guess)
+
+
+    def purge(self, email_addresses=None):
+        """
+        Removes a CDN-enabled object from public access before the TTL expires.
+        Please note that there is a limit (at this time) of 25 such requests;
+        if you need to purge more than that, you must contact support.
+
+        If one or more email_addresses are included, an email confirming the
+        purge is sent to each address.
+        """
+        return self.manager.purge(self, email_addresses=email_addresses)
+
+
+    def get_metadata(self):
+        """
+        Returns the metadata for this object as a dict.
+        """
+        return self.manager.get_metadata(self)
+
+
+    def set_metadata(self, metadata, clear=False, prefix=None):
+        """
+        Accepts a dictionary of metadata key/value pairs and updates the
+        specified object metadata with them.
+
+        If 'clear' is True, any existing metadata is deleted and only the
+        passed metadata is retained. Otherwise, the values passed here update
+        the object's metadata.
+
+        By default, the standard object metadata prefix ('X-Object-Meta-') is
+        prepended to the header name if it isn't present. For non-standard
+        headers, you must include a non-None prefix, such as an empty string.
+        """
+        return self.manager.set_metadata(self, metadata, clear=clear,
+                prefix=prefix)
+
+
+    def remove_metadata_key(self, key, prefix=None):
+        """
+        Removes the specified key from the storage object's metadata. If the
+        key does not exist in the metadata, nothing is done.
+        """
+        self.manager.remove_metadata_key(self, key, prefix=prefix)
+
+
+    def get_temp_url(self, seconds, method="GET"):
+        """
+        Returns a URL that can be used to access this object. The URL will
+        expire after `seconds` seconds.
+
+        The only methods supported are GET and PUT. Anything else will raise
+        an InvalidTemporaryURLMethod exception.
+        """
+        return self.container.get_temp_url(self, seconds=seconds,
+                method=method)
+
+
+    def delete_in_seconds(self, seconds):
+        """
+        Sets the object to be deleted after the specified number of seconds.
+        """
+        self.container.delete_object_in_seconds(self, seconds)
 
 
 
@@ -1444,6 +1648,16 @@ class StorageObjectManager(BaseManager):
     def name(self):
         """The URI base is the same as the container name."""
         return self.uri_base
+
+
+    @property
+    def container(self):
+        try:
+            return self._container
+        except AttributeError:
+            cont = self.api.get(self.uri_base)
+            self._container = cont
+            return cont
 
 
     def list(self, marker=None, limit=None, prefix=None, delimiter=None,
@@ -1741,15 +1955,38 @@ class StorageObjectManager(BaseManager):
             dl.write(self.fetch(obj))
 
 
-    def get_metadata(self, obj):
+    def purge(self, obj, email_addresses=None):
+        """
+        Removes a CDN-enabled object from public access before the TTL expires.
+        Please note that there is a limit (at this time) of 25 such requests;
+        if you need to purge more than that, you must contact support.
+
+        If one or more email_addresses are included, an email confirming the
+        purge is sent to each address.
+        """
+        cname = utils.get_name(self.container)
+        oname = utils.get_name(obj)
+        headers = {}
+        if email_addresses:
+            email_addresses = utils.coerce_string_to_list(email_addresses)
+            headers["X-Purge-Email"] = ", ".join(email_addresses)
+        uri = "/%s/%s" % (cname, oname)
+        resp, resp_body = self.api.cdn_request(uri, method="DELETE",
+                headers=headers)
+
+
+    def get_metadata(self, obj, prefix=None):
         """
         Returns the metadata for the specified object as a dict.
         """
         uri = "/%s/%s" % (self.uri_base, utils.get_name(obj))
         resp, resp_body = self.api.method_head(uri)
         ret = {}
-        low_prefix = OBJECT_META_PREFIX.lower()
-        for hkey, hval in list(resp.items()):
+        # Add the metadata prefix, if needed.
+        if prefix is None:
+            prefix = OBJECT_META_PREFIX
+        low_prefix = prefix.lower()
+        for hkey, hval in list(resp.headers.items()):
             lowkey = hkey.lower()
             if lowkey.startswith(low_prefix):
                 cleaned = hkey.replace(low_prefix, "").replace("-", "_")
@@ -1774,7 +2011,7 @@ class StorageObjectManager(BaseManager):
         if prefix is None:
             prefix = OBJECT_META_PREFIX
         massaged = _massage_metakeys(metadata, prefix)
-        cname = utils.get_name(container)
+        cname = utils.get_name(self.container)
         oname = utils.get_name(obj)
         new_meta = {}
         # Note that the API for object POST is the opposite of that for
@@ -1782,8 +2019,8 @@ class StorageObjectManager(BaseManager):
         # whereas for containers you need to set the values to an empty
         # string to delete them.
         if not clear:
-            obj_meta = self.get_metadata(obj)
-            new_meta = _massage_metakeys(obj_meta, self.object_meta_prefix)
+            obj_meta = self.get_metadata(obj, prefix=prefix)
+            new_meta = _massage_metakeys(obj_meta, prefix)
         utils.case_insensitive_update(new_meta, massaged)
         # Remove any empty values, since the object metadata API will
         # store them.
@@ -1793,8 +2030,17 @@ class StorageObjectManager(BaseManager):
                 to_pop.append(key)
         for key in to_pop:
             new_meta.pop(key)
-        uri = "%s/%s" % (cname, oname)
+        uri = "/%s/%s" % (cname, oname)
         resp, resp_body = self.api.method_post(uri, body=new_meta)
+
+
+    def remove_metadata_key(self, obj, key):
+        """
+        Removes the specified key from the object's metadata. If the key does
+        not exist in the metadata, nothing is done.
+        """
+        meta_dict = {key: ""}
+        return self.set_metadata(obj, meta_dict)
 
 
 
@@ -1813,7 +2059,7 @@ class StorageClient(BaseClient):
     def __init__(self, *args, **kwargs):
         # Constants used in metadata headers
         super(StorageClient, self).__init__(*args, **kwargs)
-        self._cached_temp_url_key = ""
+        self._cached_temp_url_key = None
         self.cdn_management_url = ""
         self.method_dict = {
                 "HEAD": self.method_head,
@@ -1970,7 +2216,7 @@ class StorageClient(BaseClient):
         """
         meta = self._cached_temp_url_key
         if not cached or not meta:
-            key = "%stemp-url-key" % self.account_meta_prefix.lower()
+            key = "temp_url_key"
             meta = self.get_account_metadata().get(key)
             self._cached_temp_url_key = meta
         return meta
@@ -2004,12 +2250,6 @@ class StorageClient(BaseClient):
         potentially save an API call to retrieve it. If you don't pass in the
         key, and don't wish to use any cached value, pass `cached=False`.
         """
-        if not key:
-            key = self.get_temp_url_key(cached=cached)
-        if not key:
-            raise exc.MissingTemporaryURLKey("You must set the key for "
-                    "Temporary URLs before you can generate them. This is "
-                    "done via the `set_temp_url_key()` method.")
         return self._manager.get_temp_url(container, obj, seconds,
                 method=method, key=key)
 
@@ -2527,16 +2767,9 @@ class StorageClient(BaseClient):
         is no longer used at all, and will not be modified with swiftclient
         info, since swiftclient is not used any more.
         """
-        new_obj_etag = self.copy_object(container, obj, new_container,
-                new_obj_name=new_obj_name, content_type=content_type)
-        if not new_obj_etag:
-            return
-        # Copy succeeded; delete the original.
-        self.delete_object(container, obj)
-        if new_reference:
-            nm = new_obj_name or utils.get_name(obj)
-            return self.get_object(new_container, nm)
-        return new_obj_etag
+        return self._manager.move_object(container, obj, new_container,
+                new_obj_name=new_obj_name, new_reference=new_reference,
+                content_type=content_type)
 
 
     def change_object_content_type(self, container, obj, new_ctype,
