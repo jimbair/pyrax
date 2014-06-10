@@ -233,7 +233,7 @@ class Container(BaseResource):
 
         Note: the container must be CDN-enabled for this to have any effect.
         """
-        return self.manager.set_web_index_page(self)
+        return self.manager.set_web_index_page(self, page)
 
 
     def set_web_error_page(self, page):
@@ -645,7 +645,7 @@ class Container(BaseResource):
         delimiter param is there for backwards compatibility only, as the call
         requires the delimiter to be '/'.
         """
-        return self.manager.list_subdirs(marker=marker, limit=limit,
+        return self.manager.list_subdirs(self, marker=marker, limit=limit,
                 prefix=prefix, delimiter=delimiter, full_listing=full_listing)
 
 
@@ -663,7 +663,7 @@ class Container(BaseResource):
         return self._cdn_log_retention
 
     def _set_cdn_log_retention(self, val):
-        self.client._set_cdn_log_retention(self, val)
+        self.manager.set_cdn_log_retention(self, val)
         self._cdn_log_retention = val
 
 
@@ -756,8 +756,8 @@ class ContainerManager(BaseManager):
             e.message = "No container named '%s' exists." % name
             raise e
         hdrs = resp.headers
-        data = {"bytes": hdrs.get("x-container-bytes-used"),
-                "count": hdrs.get("x-container-object-count"),
+        data = {"total_bytes": int(hdrs.get("x-container-bytes-used", "0")),
+                "object_count": int(hdrs.get("x-container-object-count", "0")),
                 "name": name}
         return Container(self, data, loaded=False)
 
@@ -771,8 +771,10 @@ class ContainerManager(BaseManager):
         """
         uri = "/%s" % name
         headers = {}
+        if prefix is None:
+            prefix = CONTAINER_META_PREFIX
         if metadata:
-            metadata = _massage_metakeys(metadata, CONTAINER_META_PREFIX)
+            metadata = _massage_metakeys(metadata, prefix)
             headers = metadata
         resp, resp_body = self.api.method_put(uri, headers=headers)
         if resp.status_code in (201, 202):
@@ -820,7 +822,6 @@ class ContainerManager(BaseManager):
         return resp.headers
 
 
-
     def get_account_headers(self):
         """
         Return the headers for the account. This includes all the headers, not
@@ -838,6 +839,23 @@ class ContainerManager(BaseManager):
         uri = "/%s" % utils.get_name(container)
         resp, resp_body = self.api.method_head(uri)
         return resp.headers
+
+
+    def get_account_metadata(self, prefix=None):
+        """
+        Returns a dictionary containing metadata about the account.
+        """
+        headers = self.get_account_headers()
+        if prefix is None:
+            prefix = ACCOUNT_META_PREFIX
+        low_prefix = prefix.lower()
+        ret = {}
+        for hkey, hval in list(headers.items()):
+            lowkey = hkey.lower()
+            if lowkey.startswith(low_prefix):
+                cleaned = hkey.replace(low_prefix, "").replace("-", "_")
+                ret[cleaned] = hval
+        return ret
 
 
     def set_account_metadata(self, metadata, clear=False, prefix=None):
@@ -859,7 +877,7 @@ class ContainerManager(BaseManager):
         massaged = _massage_metakeys(metadata, prefix)
         new_meta = {}
         if clear:
-            curr_meta = self.api.get_account_metadata(prefix=prefix)
+            curr_meta = self.get_account_metadata(prefix=prefix)
             for ckey in curr_meta:
                 new_meta[ckey] = ""
             new_meta = _massage_metakeys(new_meta, prefix)
@@ -880,7 +898,7 @@ class ContainerManager(BaseManager):
         # Add the metadata prefix, if needed.
         if prefix is None:
             prefix = ACCOUNT_META_PREFIX
-        curr_meta = self.api.get_account_metadata(prefix=prefix)
+        curr_meta = self.get_account_metadata(prefix=prefix)
         for ckey in curr_meta:
             curr_meta[ckey] = ""
         new_meta = _massage_metakeys(curr_meta, prefix)
@@ -900,7 +918,8 @@ class ContainerManager(BaseManager):
         ret = {}
         for hkey, hval in list(headers.items()):
             if hkey.lower().startswith(low_prefix):
-                ret[hkey] = hval
+                cleaned = hkey.replace(low_prefix, "").replace("-", "_")
+                ret[cleaned] = hval
         return ret
 
 
@@ -2162,16 +2181,7 @@ class StorageClient(BaseClient):
         """
         Returns a dictionary containing metadata about the account.
         """
-        headers = self._manager.get_account_headers()
-        meta_prefix = prefix or ACCOUNT_META_PREFIX
-        low_prefix = meta_prefix.lower()
-        ret = {}
-        for hkey, hval in list(headers.items()):
-            lowkey = hkey.lower()
-            if lowkey.startswith(low_prefix):
-                cleaned = hkey.replace(low_prefix, "").replace("-", "_")
-                ret[cleaned] = hval
-        return ret
+        return self._manager.get_account_metadata(prefix=prefix)
 
 
     def set_account_metadata(self, metadata, clear=False, prefix=None,

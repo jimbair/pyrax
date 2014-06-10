@@ -109,9 +109,13 @@ class FakeClient(object):
 
 
 class FakeStorageClient(StorageClient):
-    def __init__(self, *args, **kwargs):
-        super(FakeStorageClient, self).__init__("fakeuser",
-                "fakepassword", *args, **kwargs)
+    def __init__(self, identity=None, *args, **kwargs):
+        if identity is None:
+            identity = FakeIdentity()
+        super(FakeStorageClient, self).__init__(identity, *args, **kwargs)
+
+    def create(self, name):
+        return FakeContainer(self._manager, {"name": name})
 
 
 class FakeContainerManager(ContainerManager):
@@ -124,14 +128,7 @@ class FakeContainerManager(ContainerManager):
 class FakeContainer(Container):
     def __init__(self, *args, **kwargs):
         self.object_manager = FakeStorageObjectManager()
-
-    def _fetch_cdn_data(self):
-        self._cdn_uri = None
-        self._cdn_ttl = self.client.default_cdn_ttl
-        self._cdn_ssl_uri = None
-        self._cdn_streaming_uri = None
-        self._cdn_ios_uri = None
-        self._cdn_log_retention = False
+        super(FakeContainer, self).__init__(*args, **kwargs)
 
 
 class FakeStorageObjectManager(StorageObjectManager):
@@ -144,19 +141,18 @@ class FakeStorageObjectManager(StorageObjectManager):
 
 
 class FakeStorageObject(StorageObject):
-    def __init__(self, client, container, name=None, total_bytes=None,
-            content_type=None, last_modified=None, etag=None, attdict=None):
+    def __init__(self, manager, name=None, total_bytes=None, content_type=None,
+            last_modified=None, etag=None, attdict=None):
         """
         The object can either be initialized with individual params, or by
         passing the dict that is returned by swiftclient.
         """
-        self.client = client
-        self.container = container
+        self.manager = manager
         self.name = name
-        self.total_bytes = total_bytes
+        self.bytes = total_bytes or 0
         self.content_type = content_type
         self.last_modified = last_modified
-        self.etag = etag
+        self.hash = etag
         if attdict:
             self._read_attdict(attdict)
 
