@@ -100,6 +100,11 @@ class FakeResponse(object):
         return self.content
 
 
+class FakeIterator(utils.ResultsIterator):
+    def _init_methods(self):
+        pass
+
+
 class FakeClient(object):
     user_agent = "Fake"
     USER_AGENT = "Fake"

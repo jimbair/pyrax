@@ -975,7 +975,7 @@ class ContainerManager(BaseManager):
         if prefix is None:
             prefix = CONTAINER_META_PREFIX
         new_meta = {}
-        curr_meta = self.api.get_container_metadata(container, prefix=prefix)
+        curr_meta = self.get_metadata(container, prefix=prefix)
         for ckey in curr_meta:
             new_meta[ckey] = ""
         uri = "/%s" % utils.get_name(container)
@@ -992,7 +992,12 @@ class ContainerManager(BaseManager):
         """
         uri = "%s/%s" % (self.uri_base, utils.get_name(container))
         resp, resp_body = self.api.cdn_request(uri, "HEAD")
-        return dict(resp.headers)
+        ret = dict(resp.headers)
+        # Remove non-CDN headers
+        ret.pop("content-length", None)
+        ret.pop("content-type", None)
+        ret.pop("date", None)
+        return ret
 
 
     def set_cdn_metadata(self, container, metadata):
