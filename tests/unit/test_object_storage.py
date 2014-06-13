@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import mimetypes
 import random
 import time
 import unittest
@@ -1307,6 +1308,79 @@ class ObjectStorageTest(unittest.TestCase):
                 new_obj_name=new_obj_name, content_type=content_type)
         mgr.api.method_put.assert_called_once_with(exp_uri, headers=exp_headers)
         self.assertEqual(ret, etag)
+
+    def test_cmgr_move_object(self):
+        cont = self.container
+        mgr = cont.manager
+        obj = utils.random_unicode()
+        new_container = utils.random_unicode()
+        new_obj_name = utils.random_unicode()
+        content_type = utils.random_unicode()
+        etag = utils.random_unicode()
+        new_obj = utils.random_unicode()
+        mgr.copy_object = Mock(return_value=etag)
+        mgr.delete_object = Mock()
+        mgr.get_object = Mock(return_value=new_obj)
+        for new_reference in ("True", "False"):
+            ret = mgr.move_object(cont, obj, new_container,
+                    new_obj_name=new_obj_name, new_reference=new_reference,
+                    content_type=content_type)
+            if new_reference:
+                self.assertEqual(ret, new_obj)
+            else:
+                self.assertEqual(ret, etag)
+
+    @patch("mimetypes.guess_type")
+    def test_cmgr_change_object_content_type(self, mock_guess):
+        cont = self.container
+        mgr = cont.manager
+        mgr.get = Mock(return_value=cont)
+        obj = utils.random_unicode()
+        new_ctype = utils.random_unicode()
+        cont.cdn_enabled = True
+        cont.cdn_uri = utils.random_unicode()
+        for guess in (True, False):
+            if guess:
+                mock_guess.return_value = (new_ctype, None)
+            mgr.copy_object = Mock()
+            mgr.change_object_content_type(cont, obj, new_ctype, guess=guess)
+            mgr.copy_object.assert_called_once_with(cont, obj, cont,
+                    content_type=new_ctype)
+
+    def test_cmgr_delete_object_in_seconds(self):
+        cont = self.container
+        mgr = cont.manager
+        obj = utils.random_unicode()
+        seconds = utils.random_unicode()
+        extra_info = utils.random_unicode()
+        mgr.set_object_metadata = Mock()
+        exp_meta = {"X-Delete-After": seconds}
+        mgr.delete_object_in_seconds(cont, obj, seconds, extra_info=extra_info)
+        mgr.set_object_metadata.assert_called_once_with(cont, obj, exp_meta,
+                clear=True, prefix="")
+
+    def test_cmgr_get_object_metadata(self):
+        cont = self.container
+        mgr = cont.manager
+        mgr.get = Mock(return_value=cont)
+        obj = utils.random_unicode()
+        cont.get_object_metadata = Mock()
+        mgr.get_object_metadata(cont, obj)
+        cont.get_object_metadata.assert_called_once_with(obj)
+
+    def test_cmgr_set_object_metadata(self):
+        cont = self.container
+        mgr = cont.manager
+        mgr.get = Mock(return_value=cont)
+        obj = utils.random_unicode()
+        metadata = utils.random_unicode()
+        clear = random.choice((True, False))
+        prefix = utils.random_unicode()
+        cont.set_object_metadata = Mock()
+        mgr.set_object_metadata(cont, obj, metadata, clear=clear,
+                prefix=prefix)
+        cont.set_object_metadata.assert_called_once_with(obj, metadata,
+                clear=clear, prefix=prefix)
 
 
 

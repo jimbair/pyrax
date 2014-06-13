@@ -25,6 +25,7 @@ import hashlib
 import hmac
 import json
 import math
+import mimetypes
 import os
 import re
 import six
@@ -1928,6 +1929,17 @@ class StorageObjectManager(BaseManager):
         than the specified 'size' value, the entire object is returned.
         """
         return self.fetch(obj, size=size)
+
+
+    def delete(self, obj):
+        """
+        Deletes the object if it exists; raises NoSuchObject exception if it
+        does not exist.
+        """
+        try:
+            super(StorageObjectManager, self).delete(obj)
+        except exc.NotFound as e:
+            raise exc.NoSuchObject(e.message)
 
 
     def delete_all_objects(self, nms, async=False):
