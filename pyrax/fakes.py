@@ -132,8 +132,10 @@ class FakeContainerManager(ContainerManager):
 
 class FakeContainer(Container):
     def __init__(self, *args, **kwargs):
-        self.object_manager = FakeStorageObjectManager()
         super(FakeContainer, self).__init__(*args, **kwargs)
+        self.object_manager = FakeStorageObjectManager(self.manager.api,
+                uri_base=self.name)
+        self.object_manager._container = self
 
 
 class FakeStorageObjectManager(StorageObjectManager):

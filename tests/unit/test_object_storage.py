@@ -24,6 +24,7 @@ from pyrax.object_storage import _validate_file_or_path
 from pyrax.object_storage import Container
 from pyrax.object_storage import StorageClient
 from pyrax.object_storage import StorageObject
+from pyrax.object_storage import StorageObjectIterator
 import pyrax.exceptions as exc
 import pyrax.utils as utils
 
@@ -40,6 +41,10 @@ class ObjectStorageTest(unittest.TestCase):
     def setUp(self):
         self.client = fakes.FakeStorageClient(self.identity)
         self.container = self.client.create("fake")
+        nm = "fake_object"
+        ctype = "text/fake"
+        self.obj = StorageObject(self.container.object_manager,
+                {"name": nm, "content_type": ctype})
 
     def tearDown(self):
         pass
@@ -1321,7 +1326,7 @@ class ObjectStorageTest(unittest.TestCase):
         mgr.copy_object = Mock(return_value=etag)
         mgr.delete_object = Mock()
         mgr.get_object = Mock(return_value=new_obj)
-        for new_reference in ("True", "False"):
+        for new_reference in (True, False):
             ret = mgr.move_object(cont, obj, new_container,
                     new_obj_name=new_obj_name, new_reference=new_reference,
                     content_type=content_type)
@@ -1329,6 +1334,24 @@ class ObjectStorageTest(unittest.TestCase):
                 self.assertEqual(ret, new_obj)
             else:
                 self.assertEqual(ret, etag)
+
+    def test_cmgr_move_object_fail(self):
+        cont = self.container
+        mgr = cont.manager
+        obj = utils.random_unicode()
+        new_container = utils.random_unicode()
+        new_obj_name = utils.random_unicode()
+        content_type = utils.random_unicode()
+        etag = utils.random_unicode()
+        new_obj = utils.random_unicode()
+        mgr.copy_object = Mock(return_value=None)
+        mgr.delete_object = Mock()
+        mgr.get_object = Mock()
+        new_reference = False
+        ret = mgr.move_object(cont, obj, new_container,
+                new_obj_name=new_obj_name, new_reference=new_reference,
+                content_type=content_type)
+        self.assertIsNone(ret)
 
     @patch("mimetypes.guess_type")
     def test_cmgr_change_object_content_type(self, mock_guess):
@@ -1382,21 +1405,172 @@ class ObjectStorageTest(unittest.TestCase):
         cont.set_object_metadata.assert_called_once_with(obj, metadata,
                 clear=clear, prefix=prefix)
 
+    def test_sobj_repr(self):
+        obj = self.obj
+        obj_repr = "%s" % obj
+        self.assertTrue("<Object " in obj_repr)
+        self.assertTrue(obj.name in obj_repr)
+
+    def test_sobj_id(self):
+        cont = self.container
+        nm = utils.random_unicode()
+        obj = StorageObject(cont.object_manager, {"name": nm})
+        self.assertEqual(obj.name, nm)
+        self.assertEqual(obj.id, nm)
+
+    def test_sobj_total_bytes(self):
+        obj = self.obj
+        num_bytes = random.randint(1, 100000)
+        obj.bytes = num_bytes
+        self.assertEqual(obj.total_bytes, num_bytes)
+
+    def test_sobj_etag(self):
+        obj = self.obj
+        hashval = utils.random_unicode()
+        obj.hash = hashval
+        self.assertEqual(obj.etag, hashval)
+
+    def test_sobj_container(self):
+        obj = self.obj
+        fake_cont = utils.random_unicode()
+        obj.manager._container = fake_cont
+        cont = obj.container
+        self.assertEqual(cont, fake_cont)
+
+    def test_sobj_get(self):
+        obj = self.obj
+        mgr = obj.manager
+        mgr.fetch = Mock()
+        include_meta = utils.random_unicode()
+        chunk_size = utils.random_unicode()
+        obj.get(include_meta=include_meta, chunk_size=chunk_size)
+        mgr.fetch.assert_called_once_with(obj=obj, include_meta=include_meta,
+                chunk_size=chunk_size)
+
+    def test_sobj_fetch(self):
+        obj = self.obj
+        mgr = obj.manager
+        mgr.fetch = Mock()
+        include_meta = utils.random_unicode()
+        chunk_size = utils.random_unicode()
+        obj.fetch(include_meta=include_meta, chunk_size=chunk_size)
+        mgr.fetch.assert_called_once_with(obj=obj, include_meta=include_meta,
+                chunk_size=chunk_size)
+
+    def test_sobj_download(self):
+        obj = self.obj
+        mgr = obj.manager
+        mgr.download = Mock()
+        directory = utils.random_unicode()
+        structure = utils.random_unicode()
+        obj.download(directory, structure=structure)
+        mgr.download.assert_called_once_with(obj, directory,
+                structure=structure)
+
+    def test_sobj_copy(self):
+        obj = self.obj
+        mgr = obj.manager
+        cont = obj.container
+        cont.copy_object = Mock()
+        new_container = utils.random_unicode()
+        new_obj_name = utils.random_unicode()
+        extra_info = utils.random_unicode()
+        obj.copy(new_container, new_obj_name=new_obj_name,
+                extra_info=extra_info)
+        cont.copy_object.assert_called_once_with(obj, new_container,
+                new_obj_name=new_obj_name)
+
+    def test_sobj_move(self):
+        obj = self.obj
+        mgr = obj.manager
+        cont = obj.container
+        cont.move_object = Mock()
+        new_container = utils.random_unicode()
+        new_obj_name = utils.random_unicode()
+        extra_info = utils.random_unicode()
+        obj.move(new_container, new_obj_name=new_obj_name,
+                extra_info=extra_info)
+        cont.move_object.assert_called_once_with(obj, new_container,
+                new_obj_name=new_obj_name)
+
+    def test_sobj_change_content_type(self):
+        obj = self.obj
+        mgr = obj.manager
+        cont = obj.container
+        cont.change_object_content_type = Mock()
+        new_ctype = utils.random_unicode()
+        guess = utils.random_unicode()
+        obj.change_content_type(new_ctype, guess=guess)
+        cont.change_object_content_type.assert_called_once_with(obj,
+                new_ctype=new_ctype, guess=guess)
+
+    def test_sobj_purge(self):
+        obj = self.obj
+        mgr = obj.manager
+        email_addresses = utils.random_unicode()
+        mgr.purge = Mock()
+        obj.purge(email_addresses=email_addresses)
+        mgr.purge.assert_called_once_with(obj, email_addresses=email_addresses)
+
+    def test_sobj_get_metadata(self):
+        obj = self.obj
+        mgr = obj.manager
+        mgr.get_metadata = Mock()
+        obj.get_metadata()
+        mgr.get_metadata.assert_called_once_with(obj)
+
+    def test_sobj_set_metadata(self):
+        obj = self.obj
+        mgr = obj.manager
+        mgr.set_metadata = Mock()
+        metadata = utils.random_unicode()
+        clear = utils.random_unicode()
+        prefix = utils.random_unicode()
+        obj.set_metadata(metadata, clear=clear, prefix=prefix)
+        mgr.set_metadata.assert_called_once_with(obj, metadata, clear=clear,
+                prefix=prefix)
+
+    def test_sobj_remove_metadata_key(self):
+        obj = self.obj
+        mgr = obj.manager
+        mgr.remove_metadata_key = Mock()
+        key = utils.random_unicode()
+        prefix = utils.random_unicode()
+        obj.remove_metadata_key(key, prefix=prefix)
+        mgr.remove_metadata_key.assert_called_once_with(obj, key, prefix=prefix)
+
+    def test_sobj_get_temp_url(self):
+        obj = self.obj
+        cont = obj.container
+        cont.get_temp_url = Mock()
+        seconds = utils.random_unicode()
+        method = utils.random_unicode()
+        obj.get_temp_url(seconds, method=method)
+        cont.get_temp_url.assert_called_once_with(obj, seconds=seconds,
+                method=method)
+
+    def test_sobj_delete_in_seconds(self):
+        obj = self.obj
+        cont = obj.container
+        cont.delete_object_in_seconds = Mock()
+        seconds = utils.random_unicode()
+        obj.delete_in_seconds(seconds)
+        cont.delete_object_in_seconds.assert_called_once_with(obj, seconds)
+
+    def test_sobj_iter_init_methods(self):
+        client = self.client
+        mgr = client._manager
+        it = StorageObjectIterator(mgr)
+        self.assertEqual(it.list_method, mgr.list)
 
 
 
-#    def test_storage_object_id(self):
-#        cont = self.container
-#        nm = utils.random_unicode()
-#        sobj = StorageObject(cont.object_manager, {"name": nm})
-#        self.assertEqual(sobj.name, nm)
-#        self.assertEqual(sobj.id, nm)
-#
-#    def test_storage_object_mgr_name(self):
-#        cont = self.container
-#        om = cont.object_manager
-#        self.assertEqual(om.name, om.uri_base)
-#
+
+    def test_sobj_mgr_name(self):
+        cont = self.container
+        om = cont.object_manager
+        self.assertEqual(om.name, om.uri_base)
+
 #    def test_storage_object_mgr_list_raw(self):
 #        cont = self.container
 #        om = cont.object_manager
