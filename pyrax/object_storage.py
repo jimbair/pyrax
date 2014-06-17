@@ -54,11 +54,11 @@ DEFAULT_CDN_TTL = 86400
 
 
 # Used to indicate values that are lazy-loaded
-class Fault(object):
+class Fault_cls(object):
     def __nonzero__(self):
         return False
 
-FAULT = Fault()
+FAULT = Fault_cls()
 
 
 def assure_container(fnc):
@@ -1713,7 +1713,7 @@ class StorageObjectManager(BaseManager):
         hdrs = resp.headers
         try:
             content_length = int(hdrs.get("content-length"))
-        except ValueError:
+        except (TypeError, ValueError):
             content_length = None
         data = {"name": name,
                 "bytes": content_length,
@@ -1782,15 +1782,15 @@ class StorageObjectManager(BaseManager):
             self._upload(obj_name, data, content_type, content_encoding,
                     content_length, etag, chunked, chunk_size, headers)
         else:
-            if os.path.isfile(file_or_path):
+            if isinstance(file_or_path, file):
+                self._upload(obj_name, file_or_path, content_type,
+                        content_encoding, content_length, etag, False,
+                        headers)
+            else:
                 # Need to wrap the call in a context manager
                 with open(file_or_path, "rb") as ff:
                     self._upload(obj_name, ff, content_type, content_encoding,
                             content_length, etag, False, headers)
-            else:
-                self._upload(obj_name, file_or_path, content_type,
-                        content_encoding, content_length, etag, False,
-                        headers)
         if return_none:
             return
         return self.get(obj_name)

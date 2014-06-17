@@ -15,16 +15,17 @@ import pyrax
 import pyrax.object_storage
 from pyrax.object_storage import ACCOUNT_META_PREFIX
 from pyrax.object_storage import assure_container
+from pyrax.object_storage import Container
 from pyrax.object_storage import CONTAINER_META_PREFIX
-from pyrax.object_storage import Fault
+from pyrax.object_storage import Fault_cls
 from pyrax.object_storage import FAULT
 from pyrax.object_storage import get_file_size
+from pyrax.object_storage import OBJECT_META_PREFIX
 from pyrax.object_storage import _massage_metakeys
-from pyrax.object_storage import _validate_file_or_path
-from pyrax.object_storage import Container
 from pyrax.object_storage import StorageClient
 from pyrax.object_storage import StorageObject
 from pyrax.object_storage import StorageObjectIterator
+from pyrax.object_storage import _validate_file_or_path
 import pyrax.exceptions as exc
 import pyrax.utils as utils
 
@@ -50,7 +51,7 @@ class ObjectStorageTest(unittest.TestCase):
         pass
 
     def test_fault(self):
-        f = Fault()
+        f = Fault_cls()
         self.assertFalse(f)
 
     def test_assure_container(self):
@@ -134,13 +135,13 @@ class ObjectStorageTest(unittest.TestCase):
 
     def test_set_cdn_defaults(self):
         cont = self.container
-        self.assertTrue(isinstance(cont._cdn_uri, Fault))
+        self.assertTrue(isinstance(cont._cdn_uri, Fault_cls))
         cont._set_cdn_defaults()
         self.assertIsNone(cont._cdn_uri)
 
     def test_fetch_cdn_data(self):
         cont = self.container
-        self.assertTrue(isinstance(cont._cdn_uri, Fault))
+        self.assertTrue(isinstance(cont._cdn_uri, Fault_cls))
         cdn_uri = utils.random_unicode()
         cdn_ssl_uri = utils.random_unicode()
         cdn_streaming_uri = utils.random_unicode()
@@ -1563,100 +1564,372 @@ class ObjectStorageTest(unittest.TestCase):
         it = StorageObjectIterator(mgr)
         self.assertEqual(it.list_method, mgr.list)
 
-
-
-
     def test_sobj_mgr_name(self):
         cont = self.container
-        om = cont.object_manager
-        self.assertEqual(om.name, om.uri_base)
+        mgr = cont.object_manager
+        self.assertEqual(mgr.name, mgr.uri_base)
 
-#    def test_storage_object_mgr_list_raw(self):
-#        cont = self.container
-#        om = cont.object_manager
-#        marker = utils.random_unicode()
-#        limit = utils.random_unicode()
-#        prefix = utils.random_unicode()
-#        delimiter = utils.random_unicode()
-#        end_marker = utils.random_unicode()
-#        return_raw = utils.random_unicode()
-#        fake_resp = utils.random_unicode()
-#        fake_resp_body = utils.random_unicode()
-#        om.api.method_get = Mock(return_value=(fake_resp, fake_resp_body))
-#        ret = om.list(marker=marker, limit=limit, prefix=prefix,
-#                delimiter=delimiter, end_marker=end_marker,
-#                return_raw=return_raw)
-#        self.assertEqual(ret, fake_resp_body)
-#
-#    def test_storage_object_mgr_list_obj(self):
-#        cont = self.container
-#        om = cont.object_manager
-#        marker = utils.random_unicode()
-#        limit = utils.random_unicode()
-#        prefix = utils.random_unicode()
-#        delimiter = utils.random_unicode()
-#        end_marker = utils.random_unicode()
-#        return_raw = False
-#        fake_resp = utils.random_unicode()
-#        nm = utils.random_unicode()
-#        fake_resp_body = [{"name": nm}]
-#        om.api.method_get = Mock(return_value=(fake_resp, fake_resp_body))
-#        ret = om.list(marker=marker, limit=limit, prefix=prefix,
-#                delimiter=delimiter, end_marker=end_marker,
-#                return_raw=return_raw)
-#        self.assertTrue(isinstance(ret, list))
-#        self.assertEqual(len(ret), 1)
-#        obj = ret[0]
-#        self.assertEqual(obj.name, nm)
-#
-#    def test_storage_object_mgr_list_subdir(self):
-#        cont = self.container
-#        om = cont.object_manager
-#        marker = utils.random_unicode()
-#        limit = utils.random_unicode()
-#        prefix = utils.random_unicode()
-#        delimiter = utils.random_unicode()
-#        end_marker = utils.random_unicode()
-#        return_raw = False
-#        fake_resp = utils.random_unicode()
-#        sd = utils.random_unicode()
-#        nm = utils.random_unicode()
-#        fake_resp_body = [{"subdir": sd, "name": nm}]
-#        om.api.method_get = Mock(return_value=(fake_resp, fake_resp_body))
-#        ret = om.list(marker=marker, limit=limit, prefix=prefix,
-#                delimiter=delimiter, end_marker=end_marker,
-#                return_raw=return_raw)
-#        self.assertTrue(isinstance(ret, list))
-#        self.assertEqual(len(ret), 1)
-#        obj = ret[0]
-#        self.assertEqual(obj.name, sd)
-#
-#    def test_storage_object_mgr_get(self):
-#        cont = self.container
-#        om = cont.object_manager
-#        obj = utils.random_unicode()
-#        contlen = random.randint(100, 1000)
-#        conttype = utils.random_unicode()
-#        etag = utils.random_unicode()
-#        lastmod = utils.random_unicode()
-#        fake_resp = fakes.FakeResponse()
-#        fake_resp.headers = {"content-length": contlen,
-#                "content-type": conttype,
-#                "etag": etag,
-#                "last-modified": lastmod,
-#                }
-#        om.api.method_head = Mock(return_value=(fake_resp, None))
-#        ret = om.get(obj)
-#        self.assertEqual(ret.name, obj)
-#        self.assertEqual(ret.bytes, contlen)
-#        self.assertEqual(ret.content_type, conttype)
-#        self.assertEqual(ret.hash, etag)
-#        self.assertEqual(ret.last_modified, lastmod)
-#
-#    def test_storage_object_mgr_create_empty(self):
-#        cont = self.container
-#        om = cont.object_manager
-#        self.assertRaises(exc.NoContentSpecified, om.create)
+    def test_sobj_mgr_container(self):
+        cont = self.container
+        mgr = cont.object_manager
+        new_cont = utils.random_unicode()
+        mgr._container = new_cont
+        self.assertEqual(mgr.container, new_cont)
+
+    def test_sobj_mgr_container_missing(self):
+        cont = self.container
+        mgr = cont.object_manager
+        delattr(mgr, "_container")
+        new_cont = utils.random_unicode()
+        mgr.api.get = Mock(return_value=new_cont)
+        self.assertEqual(mgr.container, new_cont)
+
+    def test_sobj_mgr_list_raw(self):
+        cont = self.container
+        mgr = cont.object_manager
+        marker = utils.random_unicode()
+        limit = utils.random_unicode()
+        prefix = utils.random_unicode()
+        delimiter = utils.random_unicode()
+        end_marker = utils.random_unicode()
+        return_raw = utils.random_unicode()
+        fake_resp = utils.random_unicode()
+        fake_resp_body = utils.random_unicode()
+        mgr.api.method_get = Mock(return_value=(fake_resp, fake_resp_body))
+        ret = mgr.list(marker=marker, limit=limit, prefix=prefix,
+                delimiter=delimiter, end_marker=end_marker,
+                return_raw=return_raw)
+        self.assertEqual(ret, fake_resp_body)
+
+    def test_sobj_mgr_list_obj(self):
+        cont = self.container
+        mgr = cont.object_manager
+        marker = utils.random_unicode()
+        limit = utils.random_unicode()
+        prefix = utils.random_unicode()
+        delimiter = utils.random_unicode()
+        end_marker = utils.random_unicode()
+        return_raw = False
+        fake_resp = utils.random_unicode()
+        nm = utils.random_unicode()
+        fake_resp_body = [{"name": nm}]
+        mgr.api.method_get = Mock(return_value=(fake_resp, fake_resp_body))
+        ret = mgr.list(marker=marker, limit=limit, prefix=prefix,
+                delimiter=delimiter, end_marker=end_marker,
+                return_raw=return_raw)
+        self.assertTrue(isinstance(ret, list))
+        self.assertEqual(len(ret), 1)
+        obj = ret[0]
+        self.assertEqual(obj.name, nm)
+
+    def test_sobj_mgr_get(self):
+        cont = self.container
+        mgr = cont.object_manager
+        obj = utils.random_unicode()
+        contlen = random.randint(100, 1000)
+        conttype = utils.random_unicode()
+        etag = utils.random_unicode()
+        lastmod = utils.random_unicode()
+        fake_resp = fakes.FakeResponse()
+        fake_resp.headers = {"content-length": contlen,
+                "content-type": conttype,
+                "etag": etag,
+                "last-modified": lastmod,
+                }
+        mgr.api.method_head = Mock(return_value=(fake_resp, None))
+        ret = mgr.get(obj)
+        self.assertEqual(ret.name, obj)
+        self.assertEqual(ret.bytes, contlen)
+        self.assertEqual(ret.content_type, conttype)
+        self.assertEqual(ret.hash, etag)
+        self.assertEqual(ret.last_modified, lastmod)
+
+    def test_sobj_mgr_get_no_length(self):
+        cont = self.container
+        mgr = cont.object_manager
+        obj = utils.random_unicode()
+        contlen = None
+        conttype = utils.random_unicode()
+        etag = utils.random_unicode()
+        lastmod = utils.random_unicode()
+        fake_resp = fakes.FakeResponse()
+        fake_resp.headers = {"content-length": contlen,
+                "content-type": conttype,
+                "etag": etag,
+                "last-modified": lastmod,
+                }
+        mgr.api.method_head = Mock(return_value=(fake_resp, None))
+        ret = mgr.get(obj)
+        self.assertEqual(ret.bytes, contlen)
+
+    def test_sobj_mgr_create_empty(self):
+        cont = self.container
+        mgr = cont.object_manager
+        self.assertRaises(exc.NoContentSpecified, mgr.create)
+
+    def test_sobj_mgr_create_no_name(self):
+        cont = self.container
+        mgr = cont.object_manager
+        self.assertRaises(exc.MissingName, mgr.create, data="x")
+
+    def test_sobj_mgr_create_data(self):
+        cont = self.container
+        mgr = cont.object_manager
+        data = utils.random_unicode()
+        obj_name = utils.random_unicode()
+        content_type = utils.random_unicode()
+        etag = utils.random_unicode()
+        content_encoding = utils.random_unicode()
+        content_length = utils.random_unicode()
+        ttl = utils.random_unicode()
+        chunked = utils.random_unicode()
+        chunk_size = utils.random_unicode()
+        key = utils.random_unicode()
+        val = utils.random_unicode()
+        metadata = {key: val}
+        headers = {"X-Delete-After": ttl}
+        massaged = _massage_metakeys(metadata, OBJECT_META_PREFIX)
+        headers.update(massaged)
+        for return_none in (True, False):
+            mgr._upload = Mock()
+            get_resp = utils.random_unicode()
+            mgr.get = Mock(return_value=get_resp)
+            ret = mgr.create(data=data, obj_name=obj_name,
+                    content_type=content_type, etag=etag,
+                    content_encoding=content_encoding,
+                    content_length=content_length, ttl=ttl, chunked=chunked,
+                    metadata=metadata, chunk_size=chunk_size, headers=headers,
+                    return_none=return_none)
+            mgr._upload.assert_called_once_with(obj_name, data, content_type,
+                    content_encoding, content_length, etag, bool(chunk_size),
+                    chunk_size, headers)
+            if return_none:
+                self.assertIsNone(ret)
+            else:
+                self.assertEqual(ret, get_resp)
+
+    def test_sobj_mgr_create_file(self):
+        cont = self.container
+        mgr = cont.object_manager
+        obj_name = utils.random_unicode()
+        content_type = utils.random_unicode()
+        etag = utils.random_unicode()
+        content_encoding = utils.random_unicode()
+        content_length = utils.random_unicode()
+        ttl = utils.random_unicode()
+        chunked = utils.random_unicode()
+        chunk_size = utils.random_unicode()
+        key = utils.random_unicode()
+        val = utils.random_unicode()
+        metadata = {key: val}
+        headers = {"X-Delete-After": ttl}
+        massaged = _massage_metakeys(metadata, OBJECT_META_PREFIX)
+        headers.update(massaged)
+        for return_none in (True, False):
+            mgr._upload = Mock()
+            get_resp = utils.random_unicode()
+            mgr.get = Mock(return_value=get_resp)
+            with utils.SelfDeletingTempfile() as tmp:
+                ret = mgr.create(tmp, obj_name=obj_name,
+                        content_type=content_type, etag=etag,
+                        content_encoding=content_encoding,
+                        content_length=content_length, ttl=ttl,
+                        chunked=chunked, metadata=metadata,
+                        chunk_size=chunk_size, headers=headers,
+                        return_none=return_none)
+                self.assertEqual(mgr._upload.call_count, 1)
+                call_args = list(mgr._upload.call_args)[0]
+                for param in (obj_name, content_type, content_encoding,
+                        content_length, etag, False, headers):
+                    self.assertTrue(param in call_args)
+            if return_none:
+                self.assertIsNone(ret)
+            else:
+                self.assertEqual(ret, get_resp)
+
+    def test_sobj_mgr_create_file_obj(self):
+        cont = self.container
+        mgr = cont.object_manager
+        obj_name = utils.random_unicode()
+        content_type = utils.random_unicode()
+        etag = utils.random_unicode()
+        content_encoding = utils.random_unicode()
+        content_length = utils.random_unicode()
+        ttl = utils.random_unicode()
+        chunked = utils.random_unicode()
+        chunk_size = utils.random_unicode()
+        key = utils.random_unicode()
+        val = utils.random_unicode()
+        metadata = {key: val}
+        headers = {"X-Delete-After": ttl}
+        massaged = _massage_metakeys(metadata, OBJECT_META_PREFIX)
+        headers.update(massaged)
+        for return_none in (True, False):
+            mgr._upload = Mock()
+            get_resp = utils.random_unicode()
+            mgr.get = Mock(return_value=get_resp)
+            with utils.SelfDeletingTempfile() as tmp:
+                with open(tmp) as tmpfile:
+                    ret = mgr.create(tmpfile, obj_name=obj_name,
+                            content_type=content_type, etag=etag,
+                            content_encoding=content_encoding,
+                            content_length=content_length, ttl=ttl,
+                            chunked=chunked, metadata=metadata,
+                            chunk_size=chunk_size, headers=headers,
+                            return_none=return_none)
+                self.assertEqual(mgr._upload.call_count, 1)
+                call_args = list(mgr._upload.call_args)[0]
+                for param in (obj_name, content_type, content_encoding,
+                        content_length, etag, False, headers):
+                    self.assertTrue(param in call_args)
+            if return_none:
+                self.assertIsNone(ret)
+            else:
+                self.assertEqual(ret, get_resp)
+
+    def test_sobj_mgr_upload(self):
+        obj = self.obj
+        mgr = obj.manager
+        obj_name = utils.random_unicode()
+        content = utils.random_unicode()
+        content_type = utils.random_unicode()
+        content_encoding = utils.random_unicode()
+        content_length = utils.random_unicode()
+        etag = utils.random_unicode()
+        chunked = utils.random_unicode()
+        chunk_size = utils.random_unicode()
+        key = utils.random_unicode()
+        val = utils.random_unicode()
+        headers = {key: val}
+        mgr._store_object = Mock()
+        ret = mgr._upload(obj_name, content, content_type, content_encoding,
+                content_length, etag, chunked, chunk_size, headers)
+        mgr._store_object.assert_called_once_with(obj_name, content=content,
+                etag=etag, chunked=chunked, chunk_size=chunk_size,
+                headers=headers)
+
+    def test_sobj_mgr_upload_file(self):
+        obj = self.obj
+        mgr = obj.manager
+        obj_name = utils.random_unicode()
+        content_type = utils.random_unicode()
+        content_encoding = utils.random_unicode()
+        content_length = random.randint(10, 1000)
+        etag = utils.random_unicode()
+        chunked = utils.random_unicode()
+        chunk_size = utils.random_unicode()
+        key = utils.random_unicode()
+        val = utils.random_unicode()
+        headers = {key: val}
+        mgr._store_object = Mock()
+        with utils.SelfDeletingTempfile() as tmp:
+            with open(tmp) as content:
+                ret = mgr._upload(obj_name, content, content_type,
+                        content_encoding, content_length, etag, chunked,
+                        chunk_size, headers)
+        mgr._store_object.assert_called_once_with(obj_name, content=content,
+                etag=etag, chunked=chunked, chunk_size=chunk_size,
+                headers=headers)
+
+    def test_sobj_mgr_upload_file_unchunked(self):
+        obj = self.obj
+        mgr = obj.manager
+        obj_name = utils.random_unicode()
+        content_type = utils.random_unicode()
+        content_encoding = utils.random_unicode()
+        content_length = random.randint(10, 1000)
+        etag = utils.random_unicode()
+        chunked = None
+        chunk_size = utils.random_unicode()
+        key = utils.random_unicode()
+        val = utils.random_unicode()
+        headers = {key: val}
+        mgr._store_object = Mock()
+        with utils.SelfDeletingTempfile() as tmp:
+            with open(tmp) as content:
+                ret = mgr._upload(obj_name, content, content_type,
+                        content_encoding, content_length, etag, chunked,
+                        chunk_size, headers)
+        mgr._store_object.assert_called_once_with(obj_name, content=content,
+                etag=etag, chunked=chunked, chunk_size=chunk_size,
+                headers=headers)
+
+    def test_sobj_mgr_upload_file_unchunked_no_length(self):
+        obj = self.obj
+        mgr = obj.manager
+        obj_name = utils.random_unicode()
+        content_type = utils.random_unicode()
+        content_encoding = utils.random_unicode()
+        content_length = None
+        etag = utils.random_unicode()
+        chunked = None
+        chunk_size = utils.random_unicode()
+        key = utils.random_unicode()
+        val = utils.random_unicode()
+        headers = {key: val}
+        mgr._store_object = Mock()
+        with utils.SelfDeletingTempfile() as tmp:
+            with open(tmp) as content:
+                ret = mgr._upload(obj_name, content, content_type,
+                        content_encoding, content_length, etag, chunked,
+                        chunk_size, headers)
+        mgr._store_object.assert_called_once_with(obj_name, content=content,
+                etag=etag, chunked=chunked, chunk_size=chunk_size,
+                headers=headers)
+
+    def test_sobj_mgr_upload_multiple(self):
+        obj = self.obj
+        mgr = obj.manager
+        sav = pyrax.object_storage.MAX_FILE_SIZE
+        pyrax.object_storage.MAX_FILE_SIZE = 42
+        obj_name = utils.random_unicode()
+        content_type = utils.random_unicode()
+        content_encoding = utils.random_unicode()
+        content_length = None
+        etag = utils.random_unicode()
+        chunked = None
+        chunk_size = None
+        key = utils.random_unicode()
+        val = utils.random_unicode()
+        headers = {key: val}
+        mgr._store_object = Mock()
+        with utils.SelfDeletingTempfile() as tmp:
+            with open(tmp, "w") as content:
+                content.write("x" * 66)
+            with open(tmp) as content:
+                ret = mgr._upload(obj_name, content, content_type,
+                        content_encoding, content_length, etag, chunked,
+                        chunk_size, headers)
+                self.assertEqual(mgr._store_object.call_count, 3)
+        pyrax.object_storage.MAX_FILE_SIZE = sav
+
+    def test_sobj_mgr_store(self):
+        obj = self.obj
+        mgr = obj.manager
+        obj_name = utils.random_unicode()
+        content = utils.random_unicode()
+        etag = None
+        chunk_size = utils.random_unicode()
+        val = utils.random_unicode()
+        headers = {"Content-Length": val}
+        exp_uri = "/%s/%s" % (mgr.uri_base, obj_name)
+        for chunked in (True, False):
+            mgr.api.method_put = Mock(return_value=(None, None))
+            exp_hdrs = {"Content-Length": val, "Content-Type": None}
+            if chunked:
+                exp_hdrs.pop("Content-Length")
+                exp_hdrs["Transfer-Encoding"] = "chunked"
+            else:
+                exp_hdrs["ETag"] = utils.get_checksum(content)
+            mgr._store_object(obj_name, content, etag=etag, chunked=chunked,
+                    chunk_size=chunk_size, headers=headers)
+            mgr.api.method_put.assert_called_once_with(exp_uri, data=content,
+                    headers=headers)
+
+
+
+
+
 
 
 
