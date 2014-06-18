@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import mimetypes
+import os
 import random
 import time
 import unittest
@@ -1965,10 +1966,92 @@ class ObjectStorageTest(unittest.TestCase):
                     size=size, extra_info=extra_info)
             mgr._fetch_chunker.assert_called_once_with(exp_uri, chunk_size, size, obj.bytes) 
 
+    def test_sobj_mgr_fetch_chunker(self):
+        obj = self.obj
+        mgr = obj.manager
+        uri = utils.random_unicode()
+        chunk_size = random.randint(10, 50)
+        num_chunks = int(obj.total_bytes / chunk_size) + 1
+        resp = fakes.FakeResponse()
+        resp_body = "x" * chunk_size
+        mgr.api.method_get = Mock(return_value=(resp, resp_body))
+        ret = mgr._fetch_chunker(uri, chunk_size, None, obj.total_bytes)
+        txt = "".join([part for part in ret])
+        self.assertEqual(mgr.api.method_get.call_count, num_chunks)
+
+    def test_sobj_mgr_fetch_partial(self):
+        obj = self.obj
+        mgr = obj.manager
+        mgr.fetch = Mock()
+        size = random.randint(1, 1000)
+        mgr.fetch_partial(obj, size)
+        mgr.fetch.assert_called_once_with(obj, size=size)
+
+    @patch("pyrax.manager.BaseManager.delete")
+    def test_sobj_mgr_delete(self, mock_del):
+        obj = self.obj
+        mgr = obj.manager
+        mgr.delete(obj)
+        mock_del.assert_called_once_with(obj)
+
+    @patch("pyrax.manager.BaseManager.delete")
+    def test_sobj_mgr_delete_not_found(self, mock_del):
+        obj = self.obj
+        mgr = obj.manager
+        msg = utils.random_unicode()
+        mock_del.side_effect = exc.NotFound(msg)
+        self.assertRaises(exc.NoSuchObject, mgr.delete, obj)
+
+    def test_sobj_mgr_delete_all_objects(self):
+        obj = self.obj
+        mgr = obj.manager
+        nms = utils.random_unicode()
+        async = utils.random_unicode()
+        mgr.api.bulk_delete = Mock()
+        mgr.delete_all_objects(nms, async=async)
+        mgr.api.bulk_delete.assert_called_once_with(mgr.name, nms, async=async)
+
+    def test_sobj_mgr_delete_all_objects_no_names(self):
+        obj = self.obj
+        mgr = obj.manager
+        nms = utils.random_unicode()
+        async = utils.random_unicode()
+        mgr.api.list_object_names = Mock(return_value=nms)
+        mgr.api.bulk_delete = Mock()
+        mgr.delete_all_objects(None, async=async)
+        mgr.api.list_object_names.assert_called_once_with(mgr.name)
+        mgr.api.bulk_delete.assert_called_once_with(mgr.name, nms, async=async)
+
+    def test_sobj_mgr_download_no_directory(self):
+        obj = self.obj
+        mgr = obj.manager
+        self.assertRaises(exc.FolderNotFound, mgr.download, obj, "FAKE")
+
+    def test_sobj_mgr_download_no_structure(self):
+        obj = self.obj
+        mgr = obj.manager
+        txt = utils.random_unicode()
+        mgr.fetch = Mock(return_value=txt)
+        with utils.SelfDeletingTempDirectory() as directory:
+            mgr.download(obj, directory, structure=False)
+            mgr.fetch.assert_called_once_with(obj)
+            fpath = os.path.join(directory, obj.name)
+            self.assertTrue(os.path.exists(fpath))
+
+    def test_sobj_mgr_download_structure(self):
+        obj = self.obj
+        obj.name = "%s/%s/%s" % (obj.name, obj.name, obj.name)
+        mgr = obj.manager
+        txt = utils.random_unicode()
+        mgr.fetch = Mock(return_value=txt)
+        with utils.SelfDeletingTempDirectory() as directory:
+            mgr.download(obj, directory, structure=True)
+            mgr.fetch.assert_called_once_with(obj)
+            fpath = os.path.join(directory, obj.name)
+            self.assertTrue(os.path.exists(fpath))
 
 
-
-
+    #def download(self, obj, directory, structure=True):
 
 
 

@@ -1964,7 +1964,7 @@ class StorageObjectManager(BaseManager):
             errors - a list of any errors returned by the bulk delete call
         """
         if nms is None:
-            objs = self.api.list_object_names(self.name)
+            nms = self.api.list_object_names(self.name)
         return self.api.bulk_delete(self.name, nms, async=async)
 
 
@@ -1991,7 +1991,12 @@ class StorageObjectManager(BaseManager):
         else:
             target = os.path.join(directory, fname)
         with open(target, "wb") as dl:
-            dl.write(self.fetch(obj))
+            content = self.fetch(obj)
+            try:
+                dl.write(content)
+            except UnicodeEncodeError:
+                encoding = pyrax.get_encoding()
+                dl.write(content.encode(encoding))
 
 
     def purge(self, obj, email_addresses=None):
