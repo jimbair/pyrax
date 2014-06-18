@@ -45,7 +45,7 @@ class ObjectStorageTest(unittest.TestCase):
         nm = "fake_object"
         ctype = "text/fake"
         self.obj = StorageObject(self.container.object_manager,
-                {"name": nm, "content_type": ctype})
+                {"name": nm, "content_type": ctype, "bytes": 42})
 
     def tearDown(self):
         pass
@@ -1932,16 +1932,38 @@ class ObjectStorageTest(unittest.TestCase):
         chunk_size = None
         size = random.randint(1, 1000)
         extra_info = utils.random_unicode()
+        key = utils.random_unicode()
+        val = utils.random_unicode()
+        hdrs = {key: val}
         resp = fakes.FakeResponse()
+        resp.headers = hdrs
         resp_body = utils.random_unicode()
         exp_uri = "/%s/%s" % (mgr.uri_base, obj.name)
         exp_headers = {"Range": "bytes=0-%s" % size}
         for include_meta in (True, False):
             mgr.api.method_get = Mock(return_value=(resp, resp_body))
+            mgr.api.method_head = Mock(return_value=(resp, resp_body))
             ret = mgr.fetch(obj, include_meta=include_meta, chunk_size=chunk_size,
                     size=size, extra_info=extra_info)
             mgr.api.method_get.assert_called_once_with(exp_uri, headers=exp_headers)
-            self.assertEqual(ret, resp_body)
+            if include_meta:
+                self.assertEqual(ret, (hdrs, resp_body))
+            else:
+                self.assertEqual(ret, resp_body)
+
+    def test_sobj_mgr_fetch_chunk(self):
+        obj = self.obj
+        mgr = obj.manager
+        chunk_size = random.randint(1, 1000)
+        size = random.randint(1, 1000)
+        extra_info = utils.random_unicode()
+        exp_uri = "/%s/%s" % (mgr.uri_base, obj.name)
+        for include_meta in (True, False):
+            mgr.get = Mock(return_value=obj)
+            mgr._fetch_chunker = Mock()
+            mgr.fetch(obj.name, include_meta=include_meta, chunk_size=chunk_size,
+                    size=size, extra_info=extra_info)
+            mgr._fetch_chunker.assert_called_once_with(exp_uri, chunk_size, size, obj.bytes) 
 
 
 

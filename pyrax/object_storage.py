@@ -1871,8 +1871,8 @@ class StorageObjectManager(BaseManager):
         If 'include_meta' is False, only the bytes representing the
         stored object are returned.
 
-        Note: if 'chunk_size' is defined, you must fully read the object's
-        contents before making another request.
+        Note: if 'chunk_size' is defined, the 'include_meta' parameter is
+        ignored.
 
         If 'size' is specified, only the first 'size' bytes of the object will
         be returned. If the object if smaller than 'size', the entire object is
@@ -1892,12 +1892,15 @@ class StorageObjectManager(BaseManager):
             # Need the total size of the object
             if not isinstance(obj, StorageObject):
                 obj = self.get(obj)
-                obj_size = obj.bytes
+            obj_size = obj.total_bytes
             return self._fetch_chunker(uri, chunk_size, size, obj_size)
         headers = {}
         if size:
             headers = {"Range": "bytes=0-%s" % size}
         resp, resp_body = self.api.method_get(uri, headers=headers)
+        if include_meta:
+            meta_resp, meta_body = self.api.method_head(uri)
+            return (meta_resp.headers, resp_body)
         return resp_body
 
 
