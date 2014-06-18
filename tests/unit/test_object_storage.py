@@ -1903,7 +1903,7 @@ class ObjectStorageTest(unittest.TestCase):
                 self.assertEqual(mgr._store_object.call_count, 3)
         pyrax.object_storage.MAX_FILE_SIZE = sav
 
-    def test_sobj_mgr_store(self):
+    def test_sobj_mgr_store_object(self):
         obj = self.obj
         mgr = obj.manager
         obj_name = utils.random_unicode()
@@ -1925,6 +1925,23 @@ class ObjectStorageTest(unittest.TestCase):
                     chunk_size=chunk_size, headers=headers)
             mgr.api.method_put.assert_called_once_with(exp_uri, data=content,
                     headers=headers)
+
+    def test_sobj_mgr_fetch_no_chunk(self):
+        obj = self.obj
+        mgr = obj.manager
+        chunk_size = None
+        size = random.randint(1, 1000)
+        extra_info = utils.random_unicode()
+        resp = fakes.FakeResponse()
+        resp_body = utils.random_unicode()
+        exp_uri = "/%s/%s" % (mgr.uri_base, obj.name)
+        exp_headers = {"Range": "bytes=0-%s" % size}
+        for include_meta in (True, False):
+            mgr.api.method_get = Mock(return_value=(resp, resp_body))
+            ret = mgr.fetch(obj, include_meta=include_meta, chunk_size=chunk_size,
+                    size=size, extra_info=extra_info)
+            mgr.api.method_get.assert_called_once_with(exp_uri, headers=exp_headers)
+            self.assertEqual(ret, resp_body)
 
 
 
